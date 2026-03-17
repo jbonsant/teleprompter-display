@@ -1,0 +1,453 @@
+{
+  "bundleID": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+  "compilerVersion": "0.2.0",
+  "sourceHash": "a8c64dcb533ae226c5a2299f9a858b3d138f2fc9a97b36cce5d863353e97bf9e",
+  "generatedAt": "2026-03-17T00:00:00Z",
+  "sections": [
+    {
+      "id": "section-ouverture",
+      "title": "Ouverture",
+      "segmentIDs": [
+        "seg-ouverture-1"
+      ]
+    },
+    {
+      "id": "section-1-processus",
+      "title": "Documentation et modélisation des processus d'affaires notariaux",
+      "segmentIDs": [
+        "seg-1a",
+        "seg-1b",
+        "seg-1c"
+      ]
+    },
+    {
+      "id": "section-2-architecture",
+      "title": "Architecture logicielle de la solution",
+      "segmentIDs": [
+        "seg-2a",
+        "seg-2b"
+      ]
+    },
+    {
+      "id": "section-3-workflow",
+      "title": "Moteur de workflow proposé et gestion de l'évolution d'une demande",
+      "segmentIDs": [
+        "seg-3a",
+        "seg-3b",
+        "seg-3c"
+      ]
+    },
+    {
+      "id": "section-4-ui",
+      "title": "Exemple d'interface utilisateur et déroulement d'une transaction notariale",
+      "segmentIDs": [
+        "seg-4a",
+        "seg-4b"
+      ]
+    },
+    {
+      "id": "section-5-modules",
+      "title": "Articulation entre les modules Services notariaux et Coffre-fort numérique",
+      "segmentIDs": [
+        "seg-5a"
+      ]
+    },
+    {
+      "id": "section-6-tests",
+      "title": "Approche d'essais automatisés et de validation de la solution",
+      "segmentIDs": [
+        "seg-6a",
+        "seg-6b"
+      ]
+    }
+  ],
+  "displayBlocks": [
+    {
+      "id": "disp-ouverture-1",
+      "text": "Merci de nous recevoir. Je suis Jeremie Bonsant, fondateur de Webisoft. 6 sujets en 60 minutes, puis vos questions. Fil conducteur: le GPSN est un projet de numérisation du métier notarial.",
+      "segmentID": "seg-ouverture-1",
+      "sectionID": "section-ouverture"
+    },
+    {
+      "id": "disp-1a",
+      "text": "Cette solution commence par le métier notarial. La technologie vient après, au service du parcours, de la conformité et du temps gagné pour le notaire. Consultant notarial externe dédié. 70 heures budgétées pour valider les parcours et les règles métier.",
+      "segmentID": "seg-1a",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "disp-1b",
+      "text": "Cinq profils couverts de bout en bout: citoyen, notaire, administrateur Chambre, administrateur système, auditeur. RBAC distinct pour chaque profil.",
+      "segmentID": "seg-1b",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "disp-1c",
+      "text": "Dimensionnement concret: 2 700 notaires actifs, croissance 10% par an, 3 594 notaires à trois ans. 3 000 sessions simultanées. Cartographie modulaire: demandes de service, coffre-fort numérique, rendez-vous, intégrations, administration.",
+      "segmentID": "seg-1c",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "disp-2a",
+      "text": "Architecture tri-couche: React + TypeScript pour l'interface, Django pour la logique métier, PostgreSQL pour la persistance. 3 schémas logiques distincts. Même pile de base que CryptoGuard pour la GRC.",
+      "segmentID": "seg-2a",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "disp-2b",
+      "text": "Sept services conteneurisés: frontend, API, Celery worker, Celery Beat, PostgreSQL, RabbitMQ, Redis. Pile 100% open source. Portabilité: Azure App Service, migration possible vers eStruxture, Mantle, ThinkOn.",
+      "segmentID": "seg-2b",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "disp-3a",
+      "text": "Côté citoyen: catalogue de services administrable, numéro unique, pièces justificatives, suggestion de notaires par proximité. Le notaire peut aussi initier la demande via lien sécurisé.",
+      "segmentID": "seg-3a",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "disp-3b",
+      "text": "Flexibilité contrôlée: étapes facultatives ajoutables, étapes réglementaires verrouillées. Automatisations: complétude, rappels, relances, certification automatique en fin de parcours.",
+      "segmentID": "seg-3b",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "disp-3c",
+      "text": "Parcours de signature: ConsignO Cloud, empreinte SHA-256, ancrage blockchain Hyperledger Fabric, scellement, dépôt coffre-fort. Journal append-only avec chaînage BLAKE2b.",
+      "segmentID": "seg-3c",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "disp-4a",
+      "text": "Coffre-fort numérique: catégories, recherche, filtres, alertes, statut de certification. Téléversement avec glisser-déposer, antivirus, suppression EXIF.",
+      "segmentID": "seg-4a",
+      "sectionID": "section-4-ui"
+    },
+    {
+      "id": "disp-4b",
+      "text": "Prise de rendez-vous: créneaux disponibles, présentiel ou en ligne, synchronisation Google Calendar / Outlook. Partage de documents: liens temporaires sécurisés, révocation immédiate.",
+      "segmentID": "seg-4b",
+      "sectionID": "section-4-ui"
+    },
+    {
+      "id": "disp-5a",
+      "text": "Transmission automatique entre services notariaux et coffre-fort. Zéro re-téléversement. Chaîne d'intégrité: BLAKE2b, ancrage Fabric, scellement, dépôt final. Trois schémas PostgreSQL distincts.",
+      "segmentID": "seg-5a",
+      "sectionID": "section-5-modules"
+    },
+    {
+      "id": "disp-6a",
+      "text": "Pyramide de tests: unitaires, intégration, sécurité, UI/E2E. Couverture 90%+. Tests de charge Locust: 0 à 3 500 sessions en 10 minutes, P95 sous 5 secondes.",
+      "segmentID": "seg-6a",
+      "sectionID": "section-6-tests"
+    },
+    {
+      "id": "disp-6b",
+      "text": "Pipeline CI/CD: GitHub Actions, lint, tests, build, publication. Aucune fusion sans pipeline vert. Observabilité: OpenTelemetry, Prometheus, Grafana, Loki.",
+      "segmentID": "seg-6b",
+      "sectionID": "section-6-tests"
+    }
+  ],
+  "spokenSegments": [
+    {
+      "id": "seg-ouverture-1",
+      "text": "Merci de nous recevoir. Je suis Jeremie Bonsant, fondateur de Webisoft. Aujourd'hui six sujets en soixante minutes, puis vos questions. Le GPSN est un projet de numérisation du métier notarial. La technologie est au service de la profession, pas l'inverse.",
+      "sectionID": "section-ouverture"
+    },
+    {
+      "id": "seg-1a",
+      "text": "Cette solution pour nous commence par le métier notarial. La technologie vient après, au service du parcours, de la conformité et du temps gagné pour le notaire. Point de départ projet de numérisation métier pas simple projet TI. Consultant notarial externe dédié, soixante-dix heures budgétées pour valider les parcours et les règles métier.",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "seg-1b",
+      "text": "Cinq profils couverts de bout en bout: citoyen, notaire, administrateur Chambre, administrateur système, auditeur. RBAC distinct pour chaque profil. Parcours, écrans, permissions, journaux.",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "seg-1c",
+      "text": "Dimensionnement concret dès la conception. Deux mille sept cents notaires actifs, croissance projetée de dix pour cent par an, trois mille cinq cent quatre-vingt-quatorze notaires à trois ans. Trois mille sessions simultanées, quatre mille interactions quotidiennes côté services notariaux. Cartographie modulaire pensée pour le travail réel: demandes de service, coffre-fort numérique, rendez-vous et calendrier, intégrations tierces, administration et supervision.",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "seg-2a",
+      "text": "L'architecture c'est ce qui détermine si la solution va pouvoir évoluer, se transférer et être maintenue. On a fait des choix défensifs et éprouvés. Architecture tri-couche: React plus TypeScript pour l'interface, Django pour la logique métier, PostgreSQL pour la persistance. Trois schémas logiques distincts pour isoler les périmètres sensibles.",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "seg-2b",
+      "text": "Sept services conteneurisés: frontend, API, Celery worker, Celery Beat, PostgreSQL, RabbitMQ, Redis. Cycles de vie indépendants. Pile cent pour cent open source. Django BSD-3, React MIT, PostgreSQL licence PostgreSQL. Zéro redevance, zéro verrouillage fournisseur. Portabilité réelle: migration possible vers eStruxture, Mantle, ThinkOn sans refonte applicative.",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "seg-3a",
+      "text": "C'est le coeur du GPSN. Si cette brique fonctionne bien, le reste devient cohérent. Côté citoyen: entrée par un catalogue de services administrable. Types d'actes prédéfinis. Numéro unique attribué automatiquement. Suggestion de notaires par proximité. Le notaire peut aussi initier la demande avec un lien d'invitation sécurisé à usage unique.",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "seg-3b",
+      "text": "Processus standardisés par type d'acte, validés avec le consultant notarial. Flexibilité contrôlée: le notaire peut ajouter des étapes facultatives, réorganiser certaines étapes non obligatoires. Les étapes réglementaires restent verrouillées. Automatisations: vérification de complétude, rappels, relances, déclenchement automatique de la certification en fin de parcours.",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "seg-3c",
+      "text": "Traçabilité complète. Journal append-only, pas de modification manuelle possible. Chaînage cryptographique BLAKE2b. Vérification quotidienne automatisée. Parcours de signature: ConsignO Cloud, signature, empreinte SHA-256, ancrage blockchain, scellement, dépôt coffre-fort.",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "seg-4a",
+      "text": "Je commence par le coffre-fort parce que c'est la vision la plus tangible pour la Chambre. Catégories claires: actes notariés, pièces justificatives, correspondances, documents personnels. Recherche, filtres, alertes sur les nouveaux dépôts. Téléversement: zone glisser-déposer, contrôle antivirus, suppression des EXIF.",
+      "sectionID": "section-4-ui"
+    },
+    {
+      "id": "seg-4b",
+      "text": "Prise de rendez-vous: vue hebdomadaire, présentiel ou en ligne, créneaux disponibles, confirmation envoyée. Partage de documents: lien temporaire sécurisé, vingt-quatre heures par défaut, niveau d'accès configurable, révocation immédiate.",
+      "sectionID": "section-4-ui"
+    },
+    {
+      "id": "seg-5a",
+      "text": "Le coffre-fort n'est pas à côté du service notarial. Il est la continuité naturelle de la transaction notariale. Transmission automatique: pas de double téléversement, référence interne sécurisée, zéro re-téléversement. Chaîne d'intégrité continue: empreinte BLAKE2b, certification SHA-256, ancrage Hyperledger Fabric, scellement, dépôt final. Trois schémas logiques PostgreSQL distincts.",
+      "sectionID": "section-5-modules"
+    },
+    {
+      "id": "seg-6a",
+      "text": "Pas des tests ajoutés à la fin, une validation continue dès le départ. Pyramide de tests à quatre niveaux: unitaires avec pytest et Jest, intégration pour API et flux, sécurité avec SAST DAST et audit de dépendances, UI et E2E avec Playwright. Couverture cible quatre-vingt-dix pour cent et plus. Charge validée avec Locust: zéro à trois mille cinq cents sessions en dix minutes, P95 sous cinq secondes.",
+      "sectionID": "section-6-tests"
+    },
+    {
+      "id": "seg-6b",
+      "text": "Pipeline CI/CD avec GitHub Actions. Lint, tests, build des images, publication contrôlée dans Azure Container Registry. Aucune fusion sans pipeline vert. Observabilité: OpenTelemetry pour les traces, Prometheus pour les métriques, Grafana pour les tableaux de bord, Loki pour les journaux.",
+      "sectionID": "section-6-tests"
+    }
+  ],
+  "slideMarkers": [
+    {
+      "id": "slide-1",
+      "index": 1,
+      "targetSegmentID": "seg-1a",
+      "label": "SLIDE",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "slide-2",
+      "index": 2,
+      "targetSegmentID": "seg-2a",
+      "label": "SLIDE",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "slide-3",
+      "index": 3,
+      "targetSegmentID": "seg-2b",
+      "label": "SLIDE",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "slide-4",
+      "index": 4,
+      "targetSegmentID": "seg-3a",
+      "label": "SLIDE",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "slide-5",
+      "index": 5,
+      "targetSegmentID": "seg-3b",
+      "label": "SLIDE",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "slide-6",
+      "index": 6,
+      "targetSegmentID": "seg-3c",
+      "label": "SLIDE",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "slide-7",
+      "index": 7,
+      "targetSegmentID": "seg-4a",
+      "label": "SLIDE",
+      "sectionID": "section-4-ui"
+    },
+    {
+      "id": "slide-8",
+      "index": 8,
+      "targetSegmentID": "seg-5a",
+      "label": "SLIDE",
+      "sectionID": "section-5-modules"
+    },
+    {
+      "id": "slide-9",
+      "index": 9,
+      "targetSegmentID": "seg-6a",
+      "label": "SLIDE",
+      "sectionID": "section-6-tests"
+    }
+  ],
+  "bookmarks": [
+    {
+      "id": "bm-ouverture",
+      "title": "Ouverture",
+      "targetSegmentID": "seg-ouverture-1",
+      "sectionID": "section-ouverture"
+    },
+    {
+      "id": "bm-processus",
+      "title": "1. Processus d'affaires",
+      "targetSegmentID": "seg-1a",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "bm-architecture",
+      "title": "2. Architecture",
+      "targetSegmentID": "seg-2a",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "bm-workflow",
+      "title": "3. Moteur de workflow",
+      "targetSegmentID": "seg-3a",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "bm-ui",
+      "title": "4. Interface utilisateur",
+      "targetSegmentID": "seg-4a",
+      "sectionID": "section-4-ui"
+    },
+    {
+      "id": "bm-modules",
+      "title": "5. Articulation modules",
+      "targetSegmentID": "seg-5a",
+      "sectionID": "section-5-modules"
+    },
+    {
+      "id": "bm-tests",
+      "title": "6. Tests et validation",
+      "targetSegmentID": "seg-6a",
+      "sectionID": "section-6-tests"
+    }
+  ],
+  "anchorPhrases": [
+    {
+      "id": "anc-ouverture-1",
+      "segmentID": "seg-ouverture-1",
+      "text": "Jeremie Bonsant fondateur Webisoft",
+      "sectionID": "section-ouverture"
+    },
+    {
+      "id": "anc-ouverture-2",
+      "segmentID": "seg-ouverture-1",
+      "text": "numérisation métier notarial",
+      "sectionID": "section-ouverture"
+    },
+    {
+      "id": "anc-1a-1",
+      "segmentID": "seg-1a",
+      "text": "consultant notarial externe dédié",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "anc-1a-2",
+      "segmentID": "seg-1a",
+      "text": "soixante-dix heures budgétées",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "anc-1c-1",
+      "segmentID": "seg-1c",
+      "text": "deux mille sept cents notaires actifs",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "anc-1c-2",
+      "segmentID": "seg-1c",
+      "text": "cartographie modulaire",
+      "sectionID": "section-1-processus"
+    },
+    {
+      "id": "anc-2a-1",
+      "segmentID": "seg-2a",
+      "text": "architecture tri-couche",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "anc-2a-2",
+      "segmentID": "seg-2a",
+      "text": "Django logique métier PostgreSQL",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "anc-2b-1",
+      "segmentID": "seg-2b",
+      "text": "sept services conteneurisés",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "anc-2b-2",
+      "segmentID": "seg-2b",
+      "text": "zéro verrouillage fournisseur",
+      "sectionID": "section-2-architecture"
+    },
+    {
+      "id": "anc-3a-1",
+      "segmentID": "seg-3a",
+      "text": "coeur du GPSN",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "anc-3a-2",
+      "segmentID": "seg-3a",
+      "text": "catalogue services administrable",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "anc-3c-1",
+      "segmentID": "seg-3c",
+      "text": "chaînage cryptographique BLAKE2b",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "anc-3c-2",
+      "segmentID": "seg-3c",
+      "text": "ConsignO Cloud signature",
+      "sectionID": "section-3-workflow"
+    },
+    {
+      "id": "anc-4a-1",
+      "segmentID": "seg-4a",
+      "text": "coffre-fort vision tangible Chambre",
+      "sectionID": "section-4-ui"
+    },
+    {
+      "id": "anc-5a-1",
+      "segmentID": "seg-5a",
+      "text": "continuité naturelle transaction",
+      "sectionID": "section-5-modules"
+    },
+    {
+      "id": "anc-5a-2",
+      "segmentID": "seg-5a",
+      "text": "zéro re-téléversement",
+      "sectionID": "section-5-modules"
+    },
+    {
+      "id": "anc-6a-1",
+      "segmentID": "seg-6a",
+      "text": "pyramide tests quatre niveaux",
+      "sectionID": "section-6-tests"
+    },
+    {
+      "id": "anc-6a-2",
+      "segmentID": "seg-6a",
+      "text": "Locust trois mille cinq cents sessions",
+      "sectionID": "section-6-tests"
+    },
+    {
+      "id": "anc-6b-1",
+      "segmentID": "seg-6b",
+      "text": "pipeline vert obligatoire",
+      "sectionID": "section-6-tests"
+    }
+  ]
+}
