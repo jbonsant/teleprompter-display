@@ -52,7 +52,7 @@ private struct RehearsalHarnessRunner {
         )
 
         var sessionLog = SessionLog(startedAt: startedAt)
-        var aligner = StubSegmentAligner(bundle: bundle)
+        var aligner = ForwardAligner(bundle: bundle)
 
         print("Bundle: \(bundleURL.path)")
         print("Audio: \(audioURL.path)")
@@ -69,11 +69,19 @@ private struct RehearsalHarnessRunner {
                 }
             }
 
-            let frame = aligner.ingest(chunk)
-            let timestampLabel = formatTimestamp(frame.timestampSeconds)
-            let positionLabel = "\(frame.segmentIndex + 1)/\(frame.totalSegments)"
-            let segmentLabel = frame.segmentID ?? "n/a"
-            print("[\(timestampLabel)] segment \(positionLabel) \(segmentLabel) | \(frame.confirmedText)")
+            let update = aligner.ingestConfirmedChunk(chunk)
+            let timestampLabel = formatTimestamp(chunk.audioEndSeconds)
+            let positionLabel = bundle.spokenSegments.isEmpty
+                ? "0/0"
+                : "\(update.segmentIndex + 1)/\(bundle.spokenSegments.count)"
+            let segmentLabel = update.segmentID ?? "n/a"
+            let candidateSummary = update.frame.candidateScores
+                .map { "\($0.segmentID)=\(String(format: "%.2f", $0.score))" }
+                .joined(separator: ", ")
+            print("[\(timestampLabel)] segment \(positionLabel) \(segmentLabel) conf \(String(format: "%.2f", update.confidence)) | \(chunk.confirmedText)")
+            if !candidateSummary.isEmpty {
+                print("  candidates: \(candidateSummary)")
+            }
 
             sessionLog.append(
                 DiagnosticEvent(
@@ -81,25 +89,29 @@ private struct RehearsalHarnessRunner {
                     eventType: .asrChunk,
                     payload: [
                         "audioTimestamp": timestampLabel,
-                        "confirmedText": frame.confirmedText,
-                        "segmentIndex": String(frame.segmentIndex),
+                        "confirmedText": chunk.confirmedText,
+                        "segmentIndex": String(update.segmentIndex),
                         "segmentID": segmentLabel,
+                        "confidence": String(format: "%.2f", update.confidence),
                     ]
                 )
             )
             previousChunk = chunk
         }
 
-        let summary = aligner.summary(elapsedTime: Date().timeIntervalSince(startedAt))
+        let elapsedTime = Date().timeIntervalSince(startedAt)
+        let finalSegmentIndex = aligner.currentSegmentIndex
+        let finalSegmentID = aligner.currentSegmentID
+        let segmentsTraversed = bundle.spokenSegments.isEmpty ? 0 : finalSegmentIndex + 1
         sessionLog.append(
             DiagnosticEvent(
                 timestamp: Date(),
                 eventType: .stateTransition,
                 payload: [
-                    "segmentsTraversed": String(summary.segmentsTraversed),
-                    "finalSegmentIndex": String(summary.finalSegmentIndex),
-                    "finalSegmentID": summary.finalSegmentID ?? "n/a",
-                    "elapsedSeconds": String(format: "%.2f", summary.elapsedTime),
+                    "segmentsTraversed": String(segmentsTraversed),
+                    "finalSegmentIndex": String(finalSegmentIndex),
+                    "finalSegmentID": finalSegmentID ?? "n/a",
+                    "elapsedSeconds": String(format: "%.2f", elapsedTime),
                 ]
             )
         )
@@ -109,12 +121,12 @@ private struct RehearsalHarnessRunner {
 
         print("")
         print("Summary:")
-        print("- segments traversed: \(summary.segmentsTraversed)")
-        let finalPositionLabel = summary.totalSegments == 0
+        print("- segments traversed: \(segmentsTraversed)")
+        let finalPositionLabel = bundle.spokenSegments.isEmpty
             ? "0/0"
-            : "\(summary.finalSegmentIndex + 1)/\(summary.totalSegments)"
-        print("- final position: \(finalPositionLabel) \(summary.finalSegmentID ?? "n/a")")
-        print(String(format: "- elapsed time: %.2fs", summary.elapsedTime))
+            : "\(finalSegmentIndex + 1)/\(bundle.spokenSegments.count)"
+        print("- final position: \(finalPositionLabel) \(finalSegmentID ?? "n/a")")
+        print(String(format: "- elapsed time: %.2fs", elapsedTime))
         print("- event log: \(eventLogURL.path)")
         print("- model cache: \(transcription.modelDirectory.path)")
     }
@@ -143,77 +155,6 @@ private struct RehearsalHarnessRunner {
         let minutes = Int(timestamp / 60)
         let seconds = timestamp.truncatingRemainder(dividingBy: 60)
         return String(format: "%02d:%05.2f", minutes, seconds)
-    }
-}
-
-private struct StubAlignmentFrame {
-    let timestampSeconds: TimeInterval
-    let confirmedText: String
-    let segmentIndex: Int
-    let segmentID: String?
-    let totalSegments: Int
-}
-
-private struct StubAlignmentSummary {
-    let segmentsTraversed: Int
-    let finalSegmentIndex: Int
-    let finalSegmentID: String?
-    let totalSegments: Int
-    let elapsedTime: TimeInterval
-}
-
-private struct StubSegmentAligner {
-    private let bundle: PresentationBundle
-    private var nextSegmentIndex: Int = 0
-    private var visitedSegmentIDs = Set<String>()
-    private var lastFrame: StubAlignmentFrame?
-
-    init(bundle: PresentationBundle) {
-        self.bundle = bundle
-    }
-
-    mutating func ingest(_ chunk: ASROutput) -> StubAlignmentFrame {
-        guard !bundle.spokenSegments.isEmpty else {
-            let frame = StubAlignmentFrame(
-                timestampSeconds: chunk.audioEndSeconds,
-                confirmedText: chunk.confirmedText,
-                segmentIndex: 0,
-                segmentID: nil,
-                totalSegments: 0
-            )
-            lastFrame = frame
-            return frame
-        }
-
-        let segmentIndex = min(nextSegmentIndex, bundle.spokenSegments.count - 1)
-        let segment = bundle.spokenSegments[segmentIndex]
-        visitedSegmentIDs.insert(segment.id)
-
-        let frame = StubAlignmentFrame(
-            timestampSeconds: chunk.audioEndSeconds,
-            confirmedText: chunk.confirmedText,
-            segmentIndex: segmentIndex,
-            segmentID: segment.id,
-            totalSegments: bundle.spokenSegments.count
-        )
-        lastFrame = frame
-
-        if nextSegmentIndex < bundle.spokenSegments.count - 1 {
-            nextSegmentIndex += 1
-        }
-
-        return frame
-    }
-
-    func summary(elapsedTime: TimeInterval) -> StubAlignmentSummary {
-        let finalSegmentIndex = lastFrame?.segmentIndex ?? 0
-        return StubAlignmentSummary(
-            segmentsTraversed: visitedSegmentIDs.count,
-            finalSegmentIndex: finalSegmentIndex,
-            finalSegmentID: lastFrame?.segmentID,
-            totalSegments: bundle.spokenSegments.count,
-            elapsedTime: elapsedTime
-        )
     }
 }
 
