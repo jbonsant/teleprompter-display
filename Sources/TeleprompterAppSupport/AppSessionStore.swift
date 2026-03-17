@@ -4,6 +4,42 @@ import TeleprompterDomain
 
 @MainActor
 public final class AppSessionStore: ObservableObject {
+    private struct PlaceholderSegment {
+        let title: String
+        let blocks: [String]
+        let slideCounter: String
+    }
+
+    private let placeholderSegments: [PlaceholderSegment] = [
+        PlaceholderSegment(
+            title: "Ouverture",
+            blocks: [
+                "Merci de nous recevoir. Je suis Jeremie Bonsant, fondateur de Webisoft.",
+                "Le GPSN est un projet de numerisation du metier notarial.",
+                "La technologie est au service de la profession, pas l'inverse.",
+            ],
+            slideCounter: "Slide 0/3"
+        ),
+        PlaceholderSegment(
+            title: "Architecture",
+            blocks: [
+                "Architecture tri-couche: React et TypeScript, Django, PostgreSQL.",
+                "Sept services conteneurises, observabilite native, portabilite reelle.",
+                "La pile reste 100 % open source et transferable.",
+            ],
+            slideCounter: "Slide 1/3"
+        ),
+        PlaceholderSegment(
+            title: "Workflow",
+            blocks: [
+                "Le moteur orchestre la demande notariale de bout en bout.",
+                "Les controles manuels priment toujours sur l'alignement automatique.",
+                "Le coffre-fort devient le point d'arrivee naturel de la transaction.",
+            ],
+            slideCounter: "Slide 2/3"
+        ),
+    ]
+
     @Published public var sessionState: SessionState
     @Published public var slideCounter: String
     @Published public var statusDetail: String
@@ -24,14 +60,10 @@ public final class AppSessionStore: ObservableObject {
     ) {
         self.referenceDirectory = referenceDirectory
         self.sessionState = sessionState
-        self.slideCounter = "Slide 0/0"
+        self.slideCounter = placeholderSegments[0].slideCounter
         self.statusDetail = "Scaffold ready. Begin Task 1 and Task 2 from references/plan.md."
-        self.activeSegmentTitle = "Ouverture"
-        self.teleprompterBlocks = [
-            "Merci de nous recevoir. Je suis Jeremie Bonsant, fondateur de Webisoft.",
-            "Le GPSN est un projet de numerisation du metier notarial.",
-            "Les controles manuels priment toujours sur l'alignement automatique.",
-        ]
+        self.activeSegmentTitle = placeholderSegments[0].title
+        self.teleprompterBlocks = placeholderSegments[0].blocks
         self.currentSegmentIndex = 0
         self.isPaused = false
         self.isEmergencyScrolling = false
@@ -62,17 +94,32 @@ public final class AppSessionStore: ObservableObject {
     }
 
     public func handleNextSegment() {
-        guard let bundle, currentSegmentIndex < bundle.spokenSegments.count - 1 else { return }
+        if let bundle {
+            guard currentSegmentIndex < bundle.spokenSegments.count - 1 else { return }
+            currentSegmentIndex += 1
+            updateDisplayFromBundle()
+            statusDetail = "Manual advance to segment \(currentSegmentIndex)"
+            return
+        }
+
+        guard currentSegmentIndex < placeholderSegments.count - 1 else { return }
         currentSegmentIndex += 1
-        updateDisplayFromBundle()
-        statusDetail = "Manual advance to segment \(currentSegmentIndex)"
+        applyPlaceholderSegment(at: currentSegmentIndex)
+        statusDetail = "Manual advance to placeholder segment \(currentSegmentIndex + 1)"
     }
 
     public func handlePreviousSegment() {
-        guard bundle != nil, currentSegmentIndex > 0 else { return }
+        guard currentSegmentIndex > 0 else { return }
         currentSegmentIndex -= 1
-        updateDisplayFromBundle()
-        statusDetail = "Manual rewind to segment \(currentSegmentIndex)"
+
+        if bundle != nil {
+            updateDisplayFromBundle()
+            statusDetail = "Manual rewind to segment \(currentSegmentIndex)"
+            return
+        }
+
+        applyPlaceholderSegment(at: currentSegmentIndex)
+        statusDetail = "Manual rewind to placeholder segment \(currentSegmentIndex + 1)"
     }
 
     // MARK: - Bundle display
@@ -81,18 +128,15 @@ public final class AppSessionStore: ObservableObject {
         guard let bundle else { return }
         let segment = bundle.spokenSegments[currentSegmentIndex]
 
-        // Find the section this segment belongs to
         if let section = bundle.sections.first(where: { $0.segmentIDs.contains(segment.id) }) {
             activeSegmentTitle = section.title
         }
 
-        // Show current and nearby display blocks
         let currentAndUpcoming = bundle.spokenSegments[currentSegmentIndex...].prefix(4)
         let segmentIDs = Set(currentAndUpcoming.map(\.id))
         let blocks = bundle.displayBlocks.filter { segmentIDs.contains($0.segmentID) }
         teleprompterBlocks = blocks.map { $0.text }
 
-        // Update slide counter
         let totalSlides = bundle.slideMarkers.count
         let slidesPassedCount = bundle.slideMarkers.filter { marker in
             guard let markerSegmentIdx = bundle.spokenSegments.firstIndex(where: { $0.id == marker.targetSegmentID }) else {
@@ -101,5 +145,12 @@ public final class AppSessionStore: ObservableObject {
             return markerSegmentIdx <= currentSegmentIndex
         }.count
         slideCounter = "Slide \(slidesPassedCount)/\(totalSlides)"
+    }
+
+    private func applyPlaceholderSegment(at index: Int) {
+        let segment = placeholderSegments[index]
+        activeSegmentTitle = segment.title
+        teleprompterBlocks = segment.blocks
+        slideCounter = segment.slideCounter
     }
 }

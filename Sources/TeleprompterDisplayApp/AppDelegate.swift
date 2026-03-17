@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = AppSessionStore()
     private var controlWindowController: ControlWindowController?
     private var teleprompterWindowController: TeleprompterWindowController?
+    private var keyEventMonitor: Any?
 
     // MARK: - Application lifecycle
 
@@ -20,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         configureTeleprompterWindow()
         registerDisplayNotifications()
+        registerKeyboardShortcuts()
 
         NSApp.activate(ignoringOtherApps: true)
         store.statusDetail = "App shell ready. Waiting for presentation bundle."
@@ -27,6 +29,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        NotificationCenter.default.removeObserver(self)
+
+        if let keyEventMonitor {
+            NSEvent.removeMonitor(keyEventMonitor)
+        }
     }
 
     // MARK: - Application Support directories
@@ -76,6 +86,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+    }
+
+    private func registerKeyboardShortcuts() {
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.handleKeyDown(event)
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.isEmpty else { return event }
+
+        switch event.keyCode {
+        case 49:
+            store.handleTogglePause()
+            return nil
+        case 53:
+            store.handleEmergencyScroll()
+            return nil
+        case 123:
+            store.handlePreviousSegment()
+            return nil
+        case 124:
+            store.handleNextSegment()
+            return nil
+        default:
+            return event
+        }
     }
 
     @objc private func screensDidChange(_ notification: Notification) {
