@@ -13,3 +13,7 @@ Packages/
 ApplicationSupport/
 models/
 logs/
+
+# Local developer state
+.env
+.vscode/
