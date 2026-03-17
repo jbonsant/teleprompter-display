@@ -361,7 +361,7 @@ public struct ControlRootView: View {
 
     private var recoveryPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(title: "Recovery", detail: "Optional cloud recovery only activates after 30 seconds of low-confidence local drift.")
+            sectionHeader(title: "Recovery", detail: "Optional cloud recovery arms below 0.55 confidence for 30 seconds and allows one retry.")
 
             Toggle(isOn: Binding(
                 get: { store.isCloudRecoveryEnabled },

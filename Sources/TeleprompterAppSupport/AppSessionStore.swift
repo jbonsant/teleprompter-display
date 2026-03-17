@@ -608,7 +608,16 @@ public final class AppSessionStore: ObservableObject {
     public func setCloudRecoveryEnabled(_ enabled: Bool) {
         isGroqAPIKeyConfigured = groqAPIKeyProvider() != nil
         isCloudRecoveryEnabled = enabled
-        lastCloudRecoveryDetail = enabled ? "Cloud recovery armed after 30 seconds of low-confidence drift." : "Cloud recovery is disabled."
+        if enabled {
+            lastCloudRecoveryDetail = String(
+                format: "Cloud recovery armed below %.2f confidence for %.0fs with %d retry.",
+                cloudRecoveryPolicy.lowConfidenceThreshold,
+                cloudRecoveryPolicy.lowConfidenceWindowSeconds,
+                cloudRecoveryPolicy.maxRetryCount
+            )
+        } else {
+            lastCloudRecoveryDetail = "Cloud recovery is disabled."
+        }
     }
 
     public func updateConnectedDisplayCount(_ count: Int) {
@@ -1150,6 +1159,7 @@ public final class AppSessionStore: ObservableObject {
 
         guard isCloudRecoveryEnabled else {
             if update.anchorRecoveryAttempted {
+                lastCloudRecoveryDetail = "Cloud recovery disabled. Holding position locally."
                 transition(to: .recoveringLocal, reason: "Local recovery holding position", override: true)
             }
             return
@@ -1178,19 +1188,6 @@ public final class AppSessionStore: ObservableObject {
     private func attemptCloudRecovery(using update: ForwardAlignmentUpdate) async {
         transition(to: .recoveringCloud, reason: "Cloud recovery requested", override: true)
 
-        guard let apiKey = groqAPIKeyProvider() else {
-            lastCloudRecoveryDetail = "Groq API key is missing. Holding position locally."
-            appendDiagnosticEvent(
-                DiagnosticEvent(
-                    timestamp: nowProvider(),
-                    eventType: .cloudRecovery,
-                    payload: ["result": "missing_api_key"]
-                )
-            )
-            transition(to: .recoveringLocal, reason: lastCloudRecoveryDetail, override: true)
-            return
-        }
-
         let request = CloudRecoveryRequest(
             recentConfirmedWords: Array(update.recentConfirmedWords.suffix(20)),
             candidates: update.candidateWindow.map { candidate in
@@ -1201,6 +1198,23 @@ public final class AppSessionStore: ObservableObject {
                 )
             }
         )
+
+        guard let apiKey = groqAPIKeyProvider() else {
+            lastCloudRecoveryDetail = "Groq API key is missing. Holding position locally."
+            appendDiagnosticEvent(
+                DiagnosticEvent(
+                    timestamp: nowProvider(),
+                    eventType: .cloudRecovery,
+                    payload: [
+                        "result": "missing_api_key",
+                        "candidateCount": String(request.candidates.count),
+                        "recentWordCount": String(request.recentConfirmedWords.count),
+                    ]
+                )
+            )
+            transition(to: .recoveringLocal, reason: lastCloudRecoveryDetail, override: true)
+            return
+        }
 
         do {
             let resolution = try await cloudRecoveryClient.resolveTarget(apiKey: apiKey, request: request)
@@ -1213,7 +1227,12 @@ public final class AppSessionStore: ObservableObject {
                     DiagnosticEvent(
                         timestamp: nowProvider(),
                         eventType: .cloudRecovery,
-                        payload: ["result": "invalid_target"]
+                        payload: [
+                            "result": "invalid_target",
+                            "candidateCount": String(request.candidates.count),
+                            "recentWordCount": String(request.recentConfirmedWords.count),
+                            "confidence": String(format: "%.3f", resolution.confidence),
+                        ]
                     )
                 )
                 transition(to: .recoveringLocal, reason: lastCloudRecoveryDetail, override: true)
@@ -1235,6 +1254,8 @@ public final class AppSessionStore: ObservableObject {
                         "segmentID": candidate.segmentID,
                         "segmentIndex": String(candidate.segmentIndex),
                         "confidence": String(format: "%.3f", resolution.confidence),
+                        "candidateCount": String(request.candidates.count),
+                        "recentWordCount": String(request.recentConfirmedWords.count),
                     ]
                 )
             )
@@ -1244,13 +1265,15 @@ public final class AppSessionStore: ObservableObject {
             appendDiagnosticEvent(
                 DiagnosticEvent(
                     timestamp: nowProvider(),
-                    eventType: .cloudRecovery,
-                    payload: [
-                        "result": "error",
-                        "message": error.localizedDescription,
-                    ]
+                        eventType: .cloudRecovery,
+                        payload: [
+                            "result": "error",
+                            "message": error.localizedDescription,
+                            "candidateCount": String(request.candidates.count),
+                            "recentWordCount": String(request.recentConfirmedWords.count),
+                        ]
+                    )
                 )
-            )
             transition(to: .recoveringLocal, reason: lastCloudRecoveryDetail, override: true)
         }
     }

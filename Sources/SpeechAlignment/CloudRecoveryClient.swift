@@ -43,6 +43,7 @@ public protocol CloudRecoveryClientProtocol: Sendable {
 public enum CloudRecoveryClientError: LocalizedError {
     case invalidResponse
     case missingContent
+    case invalidConfidence(Double)
     case transport(String)
 
     public var errorDescription: String? {
@@ -51,6 +52,8 @@ public enum CloudRecoveryClientError: LocalizedError {
             return "Groq returned an invalid recovery payload."
         case .missingContent:
             return "Groq returned an empty recovery response."
+        case let .invalidConfidence(confidence):
+            return "Groq returned an out-of-range confidence value: \(confidence)."
         case let .transport(message):
             return message
         }
@@ -121,6 +124,9 @@ public struct GroqCloudRecoveryClient: CloudRecoveryClientProtocol {
         }
 
         let resolution = try JSONDecoder().decode(CloudRecoveryResolution.self, from: contentData)
+        guard (0...1).contains(resolution.confidence) else {
+            throw CloudRecoveryClientError.invalidConfidence(resolution.confidence)
+        }
         return resolution
     }
 }
