@@ -3,6 +3,30 @@ import SpeechAlignment
 import SwiftUI
 import TeleprompterDomain
 
+public struct TeleprompterSegmentSnapshot: Identifiable, Equatable {
+    public let id: String
+    public let segmentIndex: Int
+    public let sectionTitle: String
+    public let text: String
+
+    public init(id: String, segmentIndex: Int, sectionTitle: String, text: String) {
+        self.id = id
+        self.segmentIndex = segmentIndex
+        self.sectionTitle = sectionTitle
+        self.text = text
+    }
+}
+
+public struct TeleprompterSlideSnapshot: Equatable {
+    public let index: Int
+    public let label: String
+
+    public init(index: Int, label: String) {
+        self.index = index
+        self.label = label
+    }
+}
+
 @MainActor
 public final class AppSessionStore: ObservableObject {
     private struct PlaceholderSegment {
@@ -77,6 +101,8 @@ public final class AppSessionStore: ObservableObject {
     @Published public private(set) var nextSegmentPreview: String
     @Published public private(set) var alignmentConfidence: Double
     @Published public private(set) var lastErrorMessage: String?
+    @Published public private(set) var isMirrorModeEnabled: Bool
+    @Published public private(set) var teleprompterFontSize: CGFloat
 
     public let referenceDirectory: URL
     public private(set) var bundle: PresentationBundle?
@@ -118,6 +144,8 @@ public final class AppSessionStore: ObservableObject {
         self.nextSegmentPreview = placeholderSegments.dropFirst().first?.blocks.first ?? ""
         self.alignmentConfidence = 0
         self.lastErrorMessage = nil
+        self.isMirrorModeEnabled = false
+        self.teleprompterFontSize = 56
         self.sessionLog = SessionLog()
         self.asrService = WhisperStreamingASRService(configuration: asrConfiguration)
 
@@ -265,6 +293,18 @@ public final class AppSessionStore: ObservableObject {
         transition(to: .recoveringLocal, reason: "Manual jump to segment \(index + 1)", override: true)
     }
 
+    public func toggleMirrorMode() {
+        isMirrorModeEnabled.toggle()
+    }
+
+    public func increaseTeleprompterFontSize() {
+        teleprompterFontSize = min(teleprompterFontSize + 4, 96)
+    }
+
+    public func decreaseTeleprompterFontSize() {
+        teleprompterFontSize = max(teleprompterFontSize - 4, 36)
+    }
+
     // MARK: - ASR service integration
 
     public func refreshAudioInputs() async {
@@ -336,6 +376,92 @@ public final class AppSessionStore: ObservableObject {
         self.bundle = bundle
         currentSegmentIndex = 0
         updateDisplayForCurrentSegment()
+    }
+
+    public var teleprompterCurrentSegmentNumber: Int {
+        min(currentSegmentIndex + 1, segmentCount)
+    }
+
+    public var teleprompterSegmentCount: Int {
+        segmentCount
+    }
+
+    public var teleprompterProgressFraction: Double {
+        guard segmentCount > 0 else { return 0 }
+        return Double(teleprompterCurrentSegmentNumber) / Double(segmentCount)
+    }
+
+    public var emergencyScrollWordsPerMinute: Double {
+        145
+    }
+
+    public var emergencyScrollSegmentDuration: TimeInterval {
+        guard let activeSegment = teleprompterSegment(at: currentSegmentIndex) else {
+            return 2.5
+        }
+
+        let wordCount = max(activeSegment.text.split(whereSeparator: \.isWhitespace).count, 6)
+        return max((Double(wordCount) / emergencyScrollWordsPerMinute) * 60.0, 2.0)
+    }
+
+    public var previousTeleprompterSegment: TeleprompterSegmentSnapshot? {
+        teleprompterSegment(at: currentSegmentIndex - 1)
+    }
+
+    public var activeTeleprompterSegment: TeleprompterSegmentSnapshot? {
+        teleprompterSegment(at: currentSegmentIndex)
+    }
+
+    public var upcomingTeleprompterSegments: [TeleprompterSegmentSnapshot] {
+        (1...3).compactMap { teleprompterSegment(at: currentSegmentIndex + $0) }
+    }
+
+    public func teleprompterSegment(at index: Int) -> TeleprompterSegmentSnapshot? {
+        guard index >= 0 else { return nil }
+
+        if let bundle {
+            guard let segment = bundle.spokenSegments[safe: index] else { return nil }
+            let sectionTitle = bundle.sections.first(where: { $0.id == segment.sectionID })?.title ?? activeSegmentTitle
+            let displayText = bundle.displayBlocks.first(where: { $0.segmentID == segment.id })?.text ?? segment.text
+            return TeleprompterSegmentSnapshot(
+                id: segment.id,
+                segmentIndex: index,
+                sectionTitle: sectionTitle,
+                text: displayText
+            )
+        }
+
+        guard let segment = placeholderSegments[safe: index] else { return nil }
+        return TeleprompterSegmentSnapshot(
+            id: "placeholder-\(index)",
+            segmentIndex: index,
+            sectionTitle: segment.title,
+            text: segment.blocks.joined(separator: " ")
+        )
+    }
+
+    public func slideMarker(beforeSegmentIndex index: Int) -> TeleprompterSlideSnapshot? {
+        guard index >= 0 else { return nil }
+
+        if let bundle {
+            guard
+                let marker = bundle.slideMarkers.first(where: { marker in
+                    bundle.spokenSegments.firstIndex(where: { $0.id == marker.targetSegmentID }) == index
+                })
+            else {
+                return nil
+            }
+
+            return TeleprompterSlideSnapshot(index: marker.index, label: marker.label)
+        }
+
+        guard index > 0 else { return nil }
+        return TeleprompterSlideSnapshot(index: index, label: "SLIDE")
+    }
+
+    public var hypothesisHighlightTerms: Set<String> {
+        let terms = latestHypothesis?.text ?? latestConfirmed?.text ?? ""
+        return Set(Self.normalizedSearchTerms(from: terms))
     }
 
     // MARK: - Internal helpers
@@ -559,6 +685,14 @@ public final class AppSessionStore: ObservableObject {
     private func appendDiagnosticEvent(_ event: DiagnosticEvent) {
         diagnosticEvents.append(event)
         sessionLog.append(event)
+    }
+
+    private static func normalizedSearchTerms(from text: String) -> [String] {
+        text
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count > 2 }
     }
 }
 
