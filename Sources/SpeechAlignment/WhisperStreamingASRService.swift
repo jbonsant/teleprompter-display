@@ -67,6 +67,7 @@ public enum WhisperStreamingASRError: LocalizedError {
     case modelNotCached(String)
     case missingTokenizer
     case pipelineNotReady
+    case microphoneSanityTimedOut(String)
 
     public var errorDescription: String? {
         switch self {
@@ -80,6 +81,8 @@ public enum WhisperStreamingASRError: LocalizedError {
             return "WhisperKit tokenizer was unavailable after loading the model."
         case .pipelineNotReady:
             return "The streaming ASR pipeline is not ready."
+        case let .microphoneSanityTimedOut(prompt):
+            return "No confirmed French transcription arrived in time. Speak the prompt again: \(prompt)"
         }
     }
 }
@@ -100,7 +103,7 @@ private final class ProgressCallbackBridge: @unchecked Sendable {
     }
 }
 
-public actor WhisperStreamingASRService {
+public actor WhisperStreamingASRService: StreamingASRServiceControlling {
     private struct StreamingState {
         var currentFallbacks = 0
         var lastBufferSize = 0
@@ -108,6 +111,7 @@ public actor WhisperStreamingASRService {
         var currentText = ""
         var unconfirmedSegments: [TranscriptionSegment] = []
         var lastHypothesisText = ""
+        var latestConfirmedEvent: ASRTranscriptionEvent?
         var streamStartedAt: Date?
     }
 
@@ -145,7 +149,7 @@ public actor WhisperStreamingASRService {
         #endif
     }
 
-    public func availableInputDevices() -> [AudioInputDeviceDescriptor] {
+    public func availableInputDevices() async -> [AudioInputDeviceDescriptor] {
         #if canImport(WhisperKit)
         return AudioProcessor.getAudioDevices().map {
             AudioInputDeviceDescriptor(id: String($0.id), name: $0.name)
@@ -155,15 +159,15 @@ public actor WhisperStreamingASRService {
         #endif
     }
 
-    public func selectedInputDeviceDescriptor() -> AudioInputDeviceDescriptor? {
-        let devices = availableInputDevices()
+    public func selectedInputDeviceDescriptor() async -> AudioInputDeviceDescriptor? {
+        let devices = await availableInputDevices()
         guard let selectedInputDeviceID else {
             return devices.first
         }
         return devices.first { $0.id == String(selectedInputDeviceID) }
     }
 
-    public func selectInputDevice(id: String?) {
+    public func selectInputDevice(id: String?) async {
         guard
             let id,
             let parsedID = UInt32(id)
@@ -174,15 +178,15 @@ public actor WhisperStreamingASRService {
         selectedInputDeviceID = parsedID
     }
 
-    public func currentLatencySnapshot() -> ASRLatencySnapshot {
+    public func currentLatencySnapshot() async -> ASRLatencySnapshot {
         latencySnapshot
     }
 
-    public func currentModelID() -> String {
+    public func currentModelID() async -> String {
         configuration.modelID
     }
 
-    public func hypothesisStream() -> AsyncStream<ASRTranscriptionEvent> {
+    public func hypothesisStream() async -> AsyncStream<ASRTranscriptionEvent> {
         let streamID = UUID()
         return AsyncStream { continuation in
             hypothesisContinuations[streamID] = continuation
@@ -192,7 +196,7 @@ public actor WhisperStreamingASRService {
         }
     }
 
-    public func confirmedStream() -> AsyncStream<ASRTranscriptionEvent> {
+    public func confirmedStream() async -> AsyncStream<ASRTranscriptionEvent> {
         let streamID = UUID()
         return AsyncStream { continuation in
             confirmedContinuations[streamID] = continuation
@@ -253,13 +257,63 @@ public actor WhisperStreamingASRService {
         #endif
     }
 
+    public func warmModel() async throws -> ASRModelWarmupResult {
+        #if canImport(WhisperKit)
+        let startedAt = Date()
+        let whisperKit = try await buildWarmupWhisperKit()
+        let loadSeconds = max(Date().timeIntervalSince(startedAt), whisperKit.currentTimings.modelLoading)
+        latencySnapshot.modelLoadSeconds = loadSeconds
+        return ASRModelWarmupResult(
+            modelID: configuration.modelID,
+            loadSeconds: loadSeconds,
+            modelDirectory: whisperKit.modelFolder ?? modelDirectory
+        )
+        #else
+        throw WhisperStreamingASRError.whisperKitUnavailable
+        #endif
+    }
+
+    public func validateFrenchMicrophone(prompt: String, timeoutSeconds: TimeInterval) async throws -> ASRMicrophoneSanityResult {
+        try await start()
+        defer {
+            Task {
+                await self.stop()
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+
+        while Date() < deadline {
+            if let event = state.latestConfirmedEvent, !event.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let metrics = Self.evaluateFrenchSanity(text: event.text, prompt: prompt)
+                return ASRMicrophoneSanityResult(
+                    prompt: prompt,
+                    transcribedText: event.text,
+                    overlapScore: metrics.overlapScore,
+                    looksFrench: metrics.looksFrench,
+                    latencySeconds: event.latencySeconds
+                )
+            }
+
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        throw WhisperStreamingASRError.microphoneSanityTimedOut(prompt)
+    }
+
     public func stop() async {
         streamingTask?.cancel()
-        streamingTask = nil
-        audioProcessor?.stopRecording()
+        await finishStreams()
+        audioProcessor = nil
+        whisperKit = nil
+        transcribeTask = nil
+        state.lastBufferSize = 0
+        state.lastConfirmedSegmentEndSeconds = 0
         state.currentText = ""
         state.unconfirmedSegments = []
         state.lastHypothesisText = ""
+        state.latestConfirmedEvent = nil
+        state.streamStartedAt = nil
     }
 
     private func removeHypothesisContinuation(_ streamID: UUID) {
@@ -299,6 +353,38 @@ public actor WhisperStreamingASRService {
             verbose: false,
             logLevel: .none,
             prewarm: false,
+            load: true,
+            download: true
+        )
+        return try await WhisperKit(config)
+    }
+
+    private func buildWarmupWhisperKit() async throws -> WhisperKit {
+        if let cachedModelFolder = ModelArtifactLocator.locateModelFolder(named: configuration.modelID, in: modelDirectory) {
+            let config = WhisperKitConfig(
+                modelFolder: cachedModelFolder.path,
+                tokenizerFolder: modelDirectory,
+                voiceActivityDetector: configuration.useVoiceActivityDetection ? EnergyVAD() : nil,
+                verbose: false,
+                logLevel: .none,
+                prewarm: true,
+                load: true,
+                download: false
+            )
+            return try await WhisperKit(config)
+        }
+
+        guard configuration.allowModelDownloadIfMissing else {
+            throw WhisperStreamingASRError.modelNotCached(configuration.modelID)
+        }
+
+        let config = WhisperKitConfig(
+            model: configuration.modelID,
+            downloadBase: modelDirectory,
+            voiceActivityDetector: configuration.useVoiceActivityDetection ? EnergyVAD() : nil,
+            verbose: false,
+            logLevel: .none,
+            prewarm: true,
             load: true,
             download: true
         )
@@ -446,6 +532,7 @@ public actor WhisperStreamingASRService {
             latencySeconds: observedLatency(forAudioEnd: TimeInterval(segment.end)),
             modelID: configuration.modelID
         )
+        state.latestConfirmedEvent = event
         latencySnapshot.latestConfirmedLatencySeconds = event.latencySeconds
         for continuation in confirmedContinuations.values {
             continuation.yield(event)
@@ -490,6 +577,27 @@ public actor WhisperStreamingASRService {
             }
         }
         return nil
+    }
+
+    private static func evaluateFrenchSanity(text: String, prompt: String) -> (overlapScore: Double, looksFrench: Bool) {
+        let recognized = normalizedTokens(from: text)
+        let promptTokens = normalizedTokens(from: prompt)
+        let recognizedSet = Set(recognized)
+        let promptSet = Set(promptTokens)
+        let overlap = promptSet.isEmpty ? 0 : Double(recognizedSet.intersection(promptSet).count) / Double(promptSet.count)
+
+        let frenchStopWords: Set<String> = [
+            "bonjour", "merci", "nous", "vous", "avec", "pour", "dans", "francaise", "presentation", "teleprompteur", "est", "une", "des", "les"
+        ]
+        let looksFrench = overlap >= 0.35 || recognized.filter { frenchStopWords.contains($0) }.count >= 2
+        return (overlap, looksFrench)
+    }
+
+    private static func normalizedTokens(from text: String) -> [String] {
+        text
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "fr_CA"))
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
     }
     #endif
 }

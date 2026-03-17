@@ -250,21 +250,125 @@ public enum DiagnosticEventType: String, Codable, Sendable, Equatable, CaseItera
     case emergencyScroll
     case asrChunk
     case slideMarkerReached
+    case cloudRecovery
     case error
     case preflightCheck
+}
+
+public enum PreflightCheckStatus: String, Codable, Sendable, Equatable, CaseIterable {
+    case pending
+    case running
+    case pass
+    case fail
+}
+
+public enum PreflightCheckKind: String, Codable, Sendable, Equatable, CaseIterable, Identifiable {
+    case microphonePermission
+    case pinnedModelPresent
+    case modelWarmup
+    case liveFrenchMicTest
+    case bundleLoaded
+    case secondDisplayDetected
+    case keyboardShortcuts
+    case emergencyScroll
+
+    public var id: String {
+        rawValue
+    }
+
+    public var displayName: String {
+        switch self {
+        case .microphonePermission:
+            return "Microphone permission"
+        case .pinnedModelPresent:
+            return "Pinned WhisperKit model"
+        case .modelWarmup:
+            return "Model warmup"
+        case .liveFrenchMicTest:
+            return "Live French mic test"
+        case .bundleLoaded:
+            return "Presentation bundle"
+        case .secondDisplayDetected:
+            return "Second display"
+        case .keyboardShortcuts:
+            return "Keyboard shortcuts"
+        case .emergencyScroll:
+            return "Emergency scroll"
+        }
+    }
 }
 
 // MARK: - PreflightResult
 
 public struct PreflightResult: Codable, Sendable, Equatable {
+    public var checkID: String
     public var checkName: String
-    public var passed: Bool
+    public var status: PreflightCheckStatus
     public var detail: String
+    public var measuredAt: Date?
+    public var durationSeconds: TimeInterval?
 
     public init(checkName: String, passed: Bool, detail: String = "") {
+        self.checkID = checkName
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         self.checkName = checkName
-        self.passed = passed
+        self.status = passed ? .pass : .fail
         self.detail = detail
+        self.measuredAt = nil
+        self.durationSeconds = nil
+    }
+
+    public init(
+        kind: PreflightCheckKind,
+        status: PreflightCheckStatus,
+        detail: String = "",
+        measuredAt: Date? = nil,
+        durationSeconds: TimeInterval? = nil
+    ) {
+        self.checkID = kind.rawValue
+        self.checkName = kind.displayName
+        self.status = status
+        self.detail = detail
+        self.measuredAt = measuredAt
+        self.durationSeconds = durationSeconds
+    }
+
+    public var passed: Bool {
+        status == .pass
+    }
+}
+
+public struct PreflightReport: Codable, Sendable, Equatable {
+    public var reportID: UUID
+    public var generatedAt: Date
+    public var selectedMicrophoneName: String
+    public var activeModelID: String
+    public var displayCount: Int
+    public var bundleID: UUID?
+    public var bundleSourceHash: String?
+    public var results: [PreflightResult]
+
+    public init(
+        reportID: UUID = UUID(),
+        generatedAt: Date = .now,
+        selectedMicrophoneName: String,
+        activeModelID: String,
+        displayCount: Int,
+        bundleID: UUID? = nil,
+        bundleSourceHash: String? = nil,
+        results: [PreflightResult]
+    ) {
+        self.reportID = reportID
+        self.generatedAt = generatedAt
+        self.selectedMicrophoneName = selectedMicrophoneName
+        self.activeModelID = activeModelID
+        self.displayCount = displayCount
+        self.bundleID = bundleID
+        self.bundleSourceHash = bundleSourceHash
+        self.results = results
     }
 }
 

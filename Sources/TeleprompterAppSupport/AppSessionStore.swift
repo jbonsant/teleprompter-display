@@ -28,6 +28,19 @@ public struct TeleprompterSlideSnapshot: Equatable {
     }
 }
 
+public struct OperationalProbeResult: Sendable, Equatable {
+    public let passed: Bool
+    public let detail: String
+
+    public static func pass(_ detail: String) -> OperationalProbeResult {
+        OperationalProbeResult(passed: true, detail: detail)
+    }
+
+    public static func fail(_ detail: String) -> OperationalProbeResult {
+        OperationalProbeResult(passed: false, detail: detail)
+    }
+}
+
 @MainActor
 public final class AppSessionStore: ObservableObject {
     public struct ControlBookmarkSummary: Identifiable, Hashable, Sendable {
@@ -119,20 +132,48 @@ public final class AppSessionStore: ObservableObject {
     @Published public private(set) var lastErrorMessage: String?
     @Published public private(set) var isMirrorModeEnabled: Bool
     @Published public private(set) var teleprompterFontSize: CGFloat
+    @Published public private(set) var activePreflightReport: PreflightReport?
+    @Published public private(set) var lastPreflightReportURL: URL?
+    @Published public private(set) var isCloudRecoveryEnabled: Bool
+    @Published public private(set) var lastCloudRecoveryDetail: String
+    @Published public private(set) var isGroqAPIKeyConfigured: Bool
+    @Published public private(set) var connectedDisplayCount: Int
 
     public let referenceDirectory: URL
     public private(set) var bundle: PresentationBundle?
 
-    private let asrService: WhisperStreamingASRService
+    private let asrService: any StreamingASRServiceControlling
+    private let cloudRecoveryClient: any CloudRecoveryClientProtocol
+    private let cloudRecoveryPolicy: CloudRecoveryPolicy
+    private let groqAPIKeyProvider: () -> String?
+    private let nowProvider: () -> Date
+    private let alignmentPolicy: AlignmentPolicy
     private let modelDirectory: URL
+    private let reportsDirectory: URL
     private var hypothesisTask: Task<Void, Never>?
     private var confirmedTask: Task<Void, Never>?
     private var sessionLog: SessionLog
+    private var aligner: ForwardAligner?
+    private var lowConfidenceStartedAt: Date?
+    private var hasAttemptedCloudRecoveryForCurrentIncident = false
+    private var keyboardShortcutProbe: @MainActor () async -> OperationalProbeResult = {
+        .fail("Keyboard shortcut probe is unavailable.")
+    }
 
     public init(
         referenceDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("references"),
         sessionState: SessionState = .idle,
-        asrConfiguration: ASRConfiguration = ASRConfiguration()
+        asrConfiguration: ASRConfiguration = ASRConfiguration(),
+        alignmentPolicy: AlignmentPolicy = AlignmentPolicy(),
+        cloudRecoveryPolicy: CloudRecoveryPolicy = CloudRecoveryPolicy(),
+        modelDirectory: URL = AppSupportPaths.modelsDirectory,
+        reportsDirectory: URL = AppSupportPaths.reportsDirectory,
+        asrService: (any StreamingASRServiceControlling)? = nil,
+        cloudRecoveryClient: (any CloudRecoveryClientProtocol)? = nil,
+        groqAPIKeyProvider: @escaping () -> String? = {
+            EnvironmentValueResolver().value(for: ["GROQ_API_KEY", "groq-api-key", "groq_api_key"])
+        },
+        nowProvider: @escaping () -> Date = Date.init
     ) {
         self.referenceDirectory = referenceDirectory
         self.sessionState = sessionState
@@ -163,12 +204,25 @@ public final class AppSessionStore: ObservableObject {
         self.lastErrorMessage = nil
         self.isMirrorModeEnabled = false
         self.teleprompterFontSize = 56
+        self.activePreflightReport = nil
+        self.lastPreflightReportURL = nil
+        self.isCloudRecoveryEnabled = cloudRecoveryPolicy.enabledByDefault
+        self.lastCloudRecoveryDetail = "Cloud recovery is disabled."
+        self.isGroqAPIKeyConfigured = groqAPIKeyProvider() != nil
+        self.connectedDisplayCount = 1
         self.sessionLog = SessionLog()
-        self.asrService = WhisperStreamingASRService(configuration: asrConfiguration)
-        self.modelDirectory = RehearsalTranscriptionService.defaultModelDirectory
+        self.cloudRecoveryPolicy = cloudRecoveryPolicy
+        self.groqAPIKeyProvider = groqAPIKeyProvider
+        self.nowProvider = nowProvider
+        self.alignmentPolicy = alignmentPolicy
+        self.modelDirectory = modelDirectory
+        self.reportsDirectory = reportsDirectory
+        self.asrService = asrService ?? WhisperStreamingASRService(configuration: asrConfiguration, modelDirectory: modelDirectory)
+        self.cloudRecoveryClient = cloudRecoveryClient ?? GroqCloudRecoveryClient(modelName: cloudRecoveryPolicy.modelName, maxRetryCount: cloudRecoveryPolicy.maxRetryCount)
 
         appendDiagnosticEvent(
             DiagnosticEvent(
+                timestamp: nowProvider(),
                 eventType: .stateTransition,
                 payload: [
                     "from": "uninitialized",
@@ -177,6 +231,10 @@ public final class AppSessionStore: ObservableObject {
                 ]
             )
         )
+
+        self.preflightResults = PreflightCheckKind.allCases.map {
+            PreflightResult(kind: $0, status: .pending, detail: "Not run yet.")
+        }
 
         _ = loadReferenceBundleIfAvailable()
 
@@ -248,10 +306,22 @@ public final class AppSessionStore: ObservableObject {
         sessionState == .error || sessionState == .manualScroll
     }
 
+    public var isPreflightReady: Bool {
+        preflightResults.count == PreflightCheckKind.allCases.count && preflightResults.allSatisfy(\.passed)
+    }
+
+    public var canStartSession: Bool {
+        sessionState == .ready && isPreflightReady
+    }
+
+    public var shouldShowBlockingReadinessScreen: Bool {
+        sessionState == .preflight || !isPreflightReady
+    }
+
     public var playPauseButtonLabel: String {
         switch sessionState {
         case .ready, .countdown:
-            return "Play"
+            return sessionState == .ready ? "Start" : "Play"
         case .liveAuto, .recoveringLocal, .recoveringCloud, .manualScroll:
             return "Pause"
         case .liveFrozen:
@@ -342,42 +412,52 @@ public final class AppSessionStore: ObservableObject {
     public func runPreflight() async {
         beginPreflight()
         await refreshAudioInputs()
+        preflightResults = PreflightCheckKind.allCases.map {
+            PreflightResult(kind: $0, status: .pending, detail: "Queued.")
+        }
 
-        let microphoneGranted = await requestMicrophonePermission()
-        let bundleLoaded = loadReferenceBundleIfAvailable()
-        let micSelected = selectedAudioInputID != nil || !availableAudioInputs.isEmpty
-        let modelCached = locateCachedModelFolder(named: activeModelID) != nil
-        let promptsReady = !sectionBookmarks.isEmpty
+        for check in PreflightCheckKind.allCases {
+            _ = await executePreflightCheck(check, finalizeAfterRun: false)
+        }
 
-        let results = [
-            PreflightResult(
-                checkName: "Presentation bundle",
-                passed: bundleLoaded,
-                detail: bundleLoaded ? "Reference script compiled and loaded." : "Missing presentation script in references/."
-            ),
-            PreflightResult(
-                checkName: "Microphone permission",
-                passed: microphoneGranted,
-                detail: microphoneGranted ? "Capture access granted." : "Grant microphone access in System Settings."
-            ),
-            PreflightResult(
-                checkName: "Microphone selection",
-                passed: micSelected,
-                detail: micSelected ? selectedAudioInputName : "No capture device detected."
-            ),
-            PreflightResult(
-                checkName: "Pinned model cache",
-                passed: modelCached,
-                detail: modelCached ? activeModelID : "Pinned ASR model is not cached locally."
-            ),
-            PreflightResult(
-                checkName: "Jump lists",
-                passed: promptsReady,
-                detail: promptsReady ? "\(bookmarkSummaries.count) bookmarks ready." : "Compile the reference script before going live."
-            ),
-        ]
+        await finalizePreflightRun()
+    }
 
-        completePreflight(results)
+    @discardableResult
+    public func rerunPreflightCheck(_ check: PreflightCheckKind) async -> PreflightResult {
+        await executePreflightCheck(check, finalizeAfterRun: true)
+    }
+
+    @discardableResult
+    private func executePreflightCheck(_ check: PreflightCheckKind, finalizeAfterRun: Bool) async -> PreflightResult {
+        beginPreflight()
+        let startedAt = nowProvider()
+        updatePreflightResult(PreflightResult(kind: check, status: .running, detail: "Running...", measuredAt: startedAt))
+
+        let outcome = await runPreflightCheck(check)
+        let result = PreflightResult(
+            kind: check,
+            status: outcome.passed ? .pass : .fail,
+            detail: outcome.detail,
+            measuredAt: nowProvider(),
+            durationSeconds: nowProvider().timeIntervalSince(startedAt)
+        )
+        updatePreflightResult(result)
+        appendDiagnosticEvent(
+            DiagnosticEvent(
+                timestamp: nowProvider(),
+                eventType: .preflightCheck,
+                payload: [
+                    "check": check.rawValue,
+                    "status": result.status.rawValue,
+                    "detail": result.detail,
+                ]
+            )
+        )
+        if finalizeAfterRun {
+            await finalizePreflightRun()
+        }
+        return result
     }
 
     public func handlePlayPause() {
@@ -413,31 +493,24 @@ public final class AppSessionStore: ObservableObject {
 
     public func completePreflight(_ results: [PreflightResult]) {
         preflightResults = results
-        appendDiagnosticEvent(
-            DiagnosticEvent(
-                eventType: .preflightCheck,
-                payload: [
-                    "passed": String(results.allSatisfy(\.passed)),
-                    "checks": String(results.count),
-                ]
-            )
-        )
-
         if results.allSatisfy(\.passed) {
             transition(to: .ready, reason: "Preflight passed")
         } else {
-            fail(with: "Preflight failed")
+            statusDetail = "Preflight incomplete. Resolve failed checks before starting."
         }
     }
 
     public func startCountdown(seconds: TimeInterval = 3) {
-        countdownTargetDate = Date().addingTimeInterval(seconds)
+        countdownTargetDate = nowProvider().addingTimeInterval(seconds)
+        Task { [weak self] in
+            await self?.startASR()
+        }
         transition(to: .countdown, reason: "Countdown started")
     }
 
     public func beginLiveAuto() {
         if sessionStartedAt == nil {
-            sessionStartedAt = Date()
+            sessionStartedAt = nowProvider()
         }
         transition(to: .liveAuto, reason: "Automatic tracking live")
     }
@@ -456,6 +529,11 @@ public final class AppSessionStore: ObservableObject {
         countdownTargetDate = nil
         isPaused = false
         isEmergencyScrolling = false
+        lowConfidenceStartedAt = nil
+        hasAttemptedCloudRecoveryForCurrentIncident = false
+        Task { [weak self] in
+            await self?.stopASR()
+        }
     }
 
     public func fail(with message: String) {
@@ -503,6 +581,7 @@ public final class AppSessionStore: ObservableObject {
     public func handleNextSegment() {
         guard canMoveToNextSegment else { return }
         currentSegmentIndex += 1
+        aligner?.manualJump(to: currentSegmentIndex)
         updateDisplayForCurrentSegment()
         appendManualJumpEvent(reason: "nextSegment")
         transition(to: .recoveringLocal, reason: "Manual advance to segment \(currentSegmentIndex + 1)", override: true)
@@ -511,6 +590,7 @@ public final class AppSessionStore: ObservableObject {
     public func handlePreviousSegment() {
         guard canMoveToPreviousSegment else { return }
         currentSegmentIndex -= 1
+        aligner?.manualJump(to: currentSegmentIndex)
         updateDisplayForCurrentSegment()
         appendManualJumpEvent(reason: "previousSegment")
         transition(to: .recoveringLocal, reason: "Manual rewind to segment \(currentSegmentIndex + 1)", override: true)
@@ -519,9 +599,24 @@ public final class AppSessionStore: ObservableObject {
     public func jumpToSegment(index: Int, reason: String = "manualJump") {
         guard index >= 0, index < segmentCount else { return }
         currentSegmentIndex = index
+        aligner?.manualJump(to: index)
         updateDisplayForCurrentSegment()
         appendManualJumpEvent(reason: reason)
         transition(to: .recoveringLocal, reason: "Manual jump to segment \(index + 1)", override: true)
+    }
+
+    public func setCloudRecoveryEnabled(_ enabled: Bool) {
+        isGroqAPIKeyConfigured = groqAPIKeyProvider() != nil
+        isCloudRecoveryEnabled = enabled
+        lastCloudRecoveryDetail = enabled ? "Cloud recovery armed after 30 seconds of low-confidence drift." : "Cloud recovery is disabled."
+    }
+
+    public func updateConnectedDisplayCount(_ count: Int) {
+        connectedDisplayCount = max(count, 0)
+    }
+
+    public func installKeyboardShortcutProbe(_ probe: @escaping @MainActor () async -> OperationalProbeResult) {
+        keyboardShortcutProbe = probe
     }
 
     public func toggleMirrorMode() {
@@ -605,6 +700,7 @@ public final class AppSessionStore: ObservableObject {
 
     public func loadBundle(_ bundle: PresentationBundle) {
         self.bundle = bundle
+        self.aligner = ForwardAligner(bundle: bundle, policy: alignmentPolicy)
         currentSegmentIndex = 0
         updateDisplayForCurrentSegment()
     }
@@ -693,6 +789,152 @@ public final class AppSessionStore: ObservableObject {
     public var hypothesisHighlightTerms: Set<String> {
         let terms = latestHypothesis?.text ?? latestConfirmed?.text ?? ""
         return Set(Self.normalizedSearchTerms(from: terms))
+    }
+
+    private func runPreflightCheck(_ check: PreflightCheckKind) async -> OperationalProbeResult {
+        switch check {
+        case .microphonePermission:
+            let granted = await requestMicrophonePermission()
+            return granted
+                ? .pass("Capture permission is granted.")
+                : .fail("Grant microphone access in System Settings.")
+
+        case .pinnedModelPresent:
+            guard let modelURL = locateCachedModelFolder(named: activeModelID) else {
+                return .fail("Pinned model \(activeModelID) is missing from \(modelDirectory.path).")
+            }
+            return .pass("Found \(activeModelID) at \(modelURL.lastPathComponent).")
+
+        case .modelWarmup:
+            guard locateCachedModelFolder(named: activeModelID) != nil else {
+                return .fail("Warmup blocked because the pinned model is not cached locally.")
+            }
+
+            do {
+                let warmup = try await asrService.warmModel()
+                latencySnapshot.modelLoadSeconds = warmup.loadSeconds
+                let passed = warmup.loadSeconds < SessionConfiguration.preflightWarmupThresholdSeconds
+                return passed
+                    ? .pass(String(format: "Warm load %.2fs (< %.0fs target).", warmup.loadSeconds, SessionConfiguration.preflightWarmupThresholdSeconds))
+                    : .fail(String(format: "Warm load %.2fs exceeds %.0fs target.", warmup.loadSeconds, SessionConfiguration.preflightWarmupThresholdSeconds))
+            } catch {
+                return .fail(error.localizedDescription)
+            }
+
+        case .liveFrenchMicTest:
+            do {
+                let sanity = try await asrService.validateFrenchMicrophone(prompt: SessionConfiguration.microphonePrompt, timeoutSeconds: 12)
+                return sanity.looksFrench
+                    ? .pass("Confirmed French transcription: \"\(sanity.transcribedText)\"")
+                    : .fail("Transcription was not confidently French: \"\(sanity.transcribedText)\"")
+            } catch {
+                return .fail(error.localizedDescription)
+            }
+
+        case .bundleLoaded:
+            guard loadReferenceBundleIfAvailable(), let bundle else {
+                return .fail("Compile and load references/presentation-script.md before going live.")
+            }
+            return validateBundle(bundle)
+
+        case .secondDisplayDetected:
+            return connectedDisplayCount > 1
+                ? .pass("Detected \(connectedDisplayCount) displays.")
+                : .fail("Only \(connectedDisplayCount) display detected. Connect the teleprompter monitor.")
+
+        case .keyboardShortcuts:
+            return await keyboardShortcutProbe()
+
+        case .emergencyScroll:
+            return probeEmergencyScroll()
+        }
+    }
+
+    private func finalizePreflightRun() async {
+        let report = PreflightReport(
+            generatedAt: nowProvider(),
+            selectedMicrophoneName: selectedAudioInputName,
+            activeModelID: activeModelID,
+            displayCount: connectedDisplayCount,
+            bundleID: bundle?.bundleID,
+            bundleSourceHash: bundle?.sourceHash,
+            results: preflightResults
+        )
+        activePreflightReport = report
+        lastPreflightReportURL = persistPreflightReport(report)
+        completePreflight(preflightResults)
+    }
+
+    private func updatePreflightResult(_ result: PreflightResult) {
+        if let index = preflightResults.firstIndex(where: { $0.checkID == result.checkID }) {
+            preflightResults[index] = result
+        } else {
+            preflightResults.append(result)
+        }
+    }
+
+    private func validateBundle(_ bundle: PresentationBundle) -> OperationalProbeResult {
+        guard !bundle.spokenSegments.isEmpty else {
+            return .fail("Compiled bundle has no spoken segments.")
+        }
+
+        let sections = Set(bundle.sections.map(\.id))
+        let segments = Dictionary(uniqueKeysWithValues: bundle.spokenSegments.map { ($0.id, $0) })
+        let hasInvalidDisplayBlocks = bundle.displayBlocks.contains {
+            segments[$0.segmentID] == nil || !sections.contains($0.sectionID)
+        }
+        let hasInvalidSlideMarkers = bundle.slideMarkers.contains {
+            segments[$0.targetSegmentID] == nil || !sections.contains($0.sectionID)
+        }
+        let hasInvalidBookmarks = bundle.bookmarks.contains {
+            segments[$0.targetSegmentID] == nil || !sections.contains($0.sectionID)
+        }
+        let hasInvalidAnchors = bundle.anchorPhrases.contains {
+            segments[$0.segmentID] == nil || !sections.contains($0.sectionID)
+        }
+
+        guard !hasInvalidDisplayBlocks, !hasInvalidSlideMarkers, !hasInvalidBookmarks, !hasInvalidAnchors else {
+            return .fail("Bundle cross-references are invalid.")
+        }
+
+        return .pass("Bundle loaded with \(bundle.sections.count) sections and \(bundle.spokenSegments.count) spoken segments.")
+    }
+
+    private func probeEmergencyScroll() -> OperationalProbeResult {
+        let originalState = sessionState
+        let originalPaused = isPaused
+        let originalEmergency = isEmergencyScrolling
+        let originalStatus = statusDetail
+
+        isEmergencyScrolling = true
+        let activated = isEmergencyScrolling
+        isEmergencyScrolling = false
+        let deactivated = !isEmergencyScrolling
+
+        sessionState = originalState
+        isPaused = originalPaused
+        isEmergencyScrolling = originalEmergency
+        statusDetail = originalStatus
+
+        return activated && deactivated
+            ? .pass("Emergency scroll toggled on and off successfully.")
+            : .fail("Emergency scroll did not toggle cleanly.")
+    }
+
+    private func persistPreflightReport(_ report: PreflightReport) -> URL? {
+        do {
+            try FileManager.default.createDirectory(at: reportsDirectory, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(report)
+            let fileURL = reportsDirectory.appendingPathComponent("preflight-report-\(report.reportID.uuidString.lowercased()).json")
+            try data.write(to: fileURL, options: .atomic)
+            return fileURL
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     // MARK: - Internal helpers
@@ -824,6 +1066,7 @@ public final class AppSessionStore: ObservableObject {
         latencySnapshot.latestHypothesisLatencySeconds = event.latencySeconds
         appendDiagnosticEvent(
             DiagnosticEvent(
+                timestamp: nowProvider(),
                 eventType: .asrChunk,
                 payload: [
                     "stream": "hypothesis",
@@ -838,9 +1081,9 @@ public final class AppSessionStore: ObservableObject {
         latestConfirmed = event
         statusDetail = "Confirmed: \(event.text)"
         latencySnapshot.latestConfirmedLatencySeconds = event.latencySeconds
-        alignmentConfidence = max(0.15, min(1, 1 - (event.latencySeconds / max(latencySnapshot.confirmedTargetSeconds, 0.1))))
         appendDiagnosticEvent(
             DiagnosticEvent(
+                timestamp: nowProvider(),
                 eventType: .asrChunk,
                 payload: [
                     "stream": "confirmed",
@@ -849,6 +1092,167 @@ public final class AppSessionStore: ObservableObject {
                 ]
             )
         )
+
+        guard shouldAdvanceAlignment else {
+            alignmentConfidence = max(0.15, min(1, 1 - (event.latencySeconds / max(latencySnapshot.confirmedTargetSeconds, 0.1))))
+            return
+        }
+
+        guard var aligner else { return }
+        let update = aligner.ingestConfirmedEvent(event)
+        self.aligner = aligner
+        alignmentConfidence = update.confidence
+
+        if update.segmentIndex > currentSegmentIndex {
+            currentSegmentIndex = update.segmentIndex
+            updateDisplayForCurrentSegment()
+            appendDiagnosticEvent(
+                DiagnosticEvent(
+                    timestamp: nowProvider(),
+                    eventType: .alignmentAdvance,
+                    payload: [
+                        "segmentIndex": String(update.segmentIndex),
+                        "segmentID": update.segmentID ?? "",
+                        "confidence": String(format: "%.3f", update.confidence),
+                    ]
+                )
+            )
+            lowConfidenceStartedAt = nil
+            hasAttemptedCloudRecoveryForCurrentIncident = false
+            if sessionState == .recoveringLocal || sessionState == .recoveringCloud {
+                transition(to: .liveAuto, reason: "Alignment recovered", override: true)
+            }
+        }
+
+        handlePotentialCloudRecovery(using: update)
+    }
+
+    private var shouldAdvanceAlignment: Bool {
+        switch sessionState {
+        case .liveAuto, .recoveringLocal, .recoveringCloud:
+            return !isPaused && !isEmergencyScrolling && bundle != nil
+        case .idle, .preflight, .ready, .countdown, .liveFrozen, .manualScroll, .error:
+            return false
+        }
+    }
+
+    private func handlePotentialCloudRecovery(using update: ForwardAlignmentUpdate) {
+        let locallyStable = update.confidence >= cloudRecoveryPolicy.lowConfidenceThreshold || update.anchorRecoverySucceeded
+
+        if locallyStable {
+            lowConfidenceStartedAt = nil
+            hasAttemptedCloudRecoveryForCurrentIncident = false
+            if sessionState == .recoveringLocal || sessionState == .recoveringCloud {
+                transition(to: .liveAuto, reason: "Local alignment stable", override: true)
+            }
+            return
+        }
+
+        guard isCloudRecoveryEnabled else {
+            if update.anchorRecoveryAttempted {
+                transition(to: .recoveringLocal, reason: "Local recovery holding position", override: true)
+            }
+            return
+        }
+
+        guard update.anchorRecoveryAttempted, !update.anchorRecoverySucceeded else {
+            return
+        }
+
+        if lowConfidenceStartedAt == nil {
+            lowConfidenceStartedAt = nowProvider()
+            transition(to: .recoveringLocal, reason: "Low confidence detected. Holding local position.", override: true)
+            return
+        }
+
+        let elapsed = nowProvider().timeIntervalSince(lowConfidenceStartedAt ?? nowProvider())
+        guard elapsed >= cloudRecoveryPolicy.lowConfidenceWindowSeconds else { return }
+        guard !hasAttemptedCloudRecoveryForCurrentIncident else { return }
+
+        hasAttemptedCloudRecoveryForCurrentIncident = true
+        Task { [weak self] in
+            await self?.attemptCloudRecovery(using: update)
+        }
+    }
+
+    private func attemptCloudRecovery(using update: ForwardAlignmentUpdate) async {
+        transition(to: .recoveringCloud, reason: "Cloud recovery requested", override: true)
+
+        guard let apiKey = groqAPIKeyProvider() else {
+            lastCloudRecoveryDetail = "Groq API key is missing. Holding position locally."
+            appendDiagnosticEvent(
+                DiagnosticEvent(
+                    timestamp: nowProvider(),
+                    eventType: .cloudRecovery,
+                    payload: ["result": "missing_api_key"]
+                )
+            )
+            transition(to: .recoveringLocal, reason: lastCloudRecoveryDetail, override: true)
+            return
+        }
+
+        let request = CloudRecoveryRequest(
+            recentConfirmedWords: Array(update.recentConfirmedWords.suffix(20)),
+            candidates: update.candidateWindow.map { candidate in
+                CloudRecoveryCandidate(
+                    segmentID: candidate.segmentID,
+                    segmentIndex: candidate.segmentIndex,
+                    text: candidate.text
+                )
+            }
+        )
+
+        do {
+            let resolution = try await cloudRecoveryClient.resolveTarget(apiKey: apiKey, request: request)
+            guard
+                let targetSegmentID = resolution.targetSegmentID,
+                let candidate = update.candidateWindow.first(where: { $0.segmentID == targetSegmentID })
+            else {
+                lastCloudRecoveryDetail = "Groq could not validate a target inside the candidate window. Holding position."
+                appendDiagnosticEvent(
+                    DiagnosticEvent(
+                        timestamp: nowProvider(),
+                        eventType: .cloudRecovery,
+                        payload: ["result": "invalid_target"]
+                    )
+                )
+                transition(to: .recoveringLocal, reason: lastCloudRecoveryDetail, override: true)
+                return
+            }
+
+            aligner?.manualJump(to: candidate.segmentIndex)
+            currentSegmentIndex = candidate.segmentIndex
+            updateDisplayForCurrentSegment()
+            lowConfidenceStartedAt = nil
+            hasAttemptedCloudRecoveryForCurrentIncident = false
+            lastCloudRecoveryDetail = String(format: "Recovered to segment %d with %.2f confidence.", candidate.segmentIndex + 1, resolution.confidence)
+            appendDiagnosticEvent(
+                DiagnosticEvent(
+                    timestamp: nowProvider(),
+                    eventType: .cloudRecovery,
+                    payload: [
+                        "result": "success",
+                        "segmentID": candidate.segmentID,
+                        "segmentIndex": String(candidate.segmentIndex),
+                        "confidence": String(format: "%.3f", resolution.confidence),
+                    ]
+                )
+            )
+            transition(to: .liveAuto, reason: lastCloudRecoveryDetail, override: true)
+        } catch {
+            lastCloudRecoveryDetail = "Cloud recovery failed: \(error.localizedDescription)"
+            appendDiagnosticEvent(
+                DiagnosticEvent(
+                    timestamp: nowProvider(),
+                    eventType: .cloudRecovery,
+                    payload: [
+                        "result": "error",
+                        "message": error.localizedDescription,
+                    ]
+                )
+            )
+            transition(to: .recoveringLocal, reason: lastCloudRecoveryDetail, override: true)
+        }
     }
 
     private func transition(to newState: SessionState, reason: String, override: Bool = false) {

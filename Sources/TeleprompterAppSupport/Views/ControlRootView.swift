@@ -4,6 +4,7 @@ import TeleprompterDomain
 public struct ControlRootView: View {
     @ObservedObject private var store: AppSessionStore
     @State private var isRunningPreflight = false
+    @State private var rerunningChecks: Set<String> = []
 
     public init(store: AppSessionStore) {
         self.store = store
@@ -13,9 +14,14 @@ public struct ControlRootView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 topBar
+                readinessPanel
                 transportPanel
+                    .disabled(store.shouldShowBlockingReadinessScreen)
+                    .opacity(store.shouldShowBlockingReadinessScreen ? 0.45 : 1)
                 HStack(alignment: .top, spacing: 18) {
                     jumpListsColumn
+                        .disabled(store.shouldShowBlockingReadinessScreen)
+                        .opacity(store.shouldShowBlockingReadinessScreen ? 0.45 : 1)
                     statusColumn
                 }
             }
@@ -87,7 +93,7 @@ public struct ControlRootView: View {
                 }
                 .buttonStyle(TransportButtonStyle(tint: .blue))
                 .keyboardShortcut(.space, modifiers: [])
-                .disabled(!store.canTriggerPlayPause)
+                .disabled(!store.canTriggerPlayPause || (store.sessionState == .ready && !store.canStartSession))
 
                 Button(action: store.handleFreeze) {
                     transportLabel(store.freezeButtonLabel, shortcut: "F", symbol: "snowflake")
@@ -144,8 +150,8 @@ public struct ControlRootView: View {
     private var statusColumn: some View {
         VStack(alignment: .leading, spacing: 18) {
             syncPanel
+            recoveryPanel
             microphonePanel
-            preflightPanel
         }
         .frame(maxWidth: 410, alignment: .topLeading)
     }
@@ -293,11 +299,11 @@ public struct ControlRootView: View {
         .panelBackground()
     }
 
-    private var preflightPanel: some View {
+    private var readinessPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(title: "Preflight", detail: "Checks stay visible so the operator can verify readiness before countdown.")
+            sectionHeader(title: "Readiness Gate", detail: "Every blocking preflight check must pass before the session can start.")
 
-            HStack(spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 Button(isRunningPreflight ? "Running…" : "Run Preflight") {
                     isRunningPreflight = true
                     Task {
@@ -310,6 +316,12 @@ public struct ControlRootView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(isRunningPreflight)
 
+                Button("Start") {
+                    store.handlePlayPause()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!store.canStartSession)
+
                 Button("Reload Script") {
                     store.reloadReferenceBundle()
                 }
@@ -319,29 +331,96 @@ public struct ControlRootView: View {
                     store.resetToIdle()
                 }
                 .buttonStyle(.bordered)
+
+                Spacer(minLength: 16)
+
+                Text(store.canStartSession ? "Ready" : "Blocked")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(store.canStartSession ? Color.green : Color.orange)
             }
 
-            let results = store.preflightResults.isEmpty ? defaultPreflightRows : store.preflightResults
-            ForEach(Array(results.enumerated()), id: \.offset) { _, result in
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: result.passed ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                        .foregroundStyle(result.passed ? Color.green : Color.red)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(result.checkName)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
-                        Text(result.detail.isEmpty ? (result.passed ? "Ready." : "Pending.") : result.detail)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.white.opacity(0.62))
-                    }
-                    Spacer()
+            Text("Mic prompt: \(SessionConfiguration.microphonePrompt)")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.58))
+
+            VStack(spacing: 10) {
+                ForEach(store.preflightResults, id: \.checkID) { result in
+                    preflightRow(result)
                 }
-                .padding(10)
-                .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            if let reportURL = store.lastPreflightReportURL {
+                Text("Report saved to \(reportURL.path)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.5))
             }
         }
         .padding(18)
         .panelBackground()
+    }
+
+    private var recoveryPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(title: "Recovery", detail: "Optional cloud recovery only activates after 30 seconds of low-confidence local drift.")
+
+            Toggle(isOn: Binding(
+                get: { store.isCloudRecoveryEnabled },
+                set: { store.setCloudRecoveryEnabled($0) }
+            )) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Enable Groq Cloud Recovery")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(store.isGroqAPIKeyConfigured ? "GROQ_API_KEY detected." : "Missing GROQ_API_KEY or .env fallback.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.58))
+                }
+            }
+            .toggleStyle(SwitchToggleStyle(tint: .mint))
+
+            previewCard(title: "Cloud Status", text: store.lastCloudRecoveryDetail)
+        }
+        .padding(18)
+        .panelBackground()
+    }
+
+    private func preflightRow(_ result: PreflightResult) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: preflightIcon(for: result.status))
+                .foregroundStyle(preflightColor(for: result.status))
+                .font(.system(size: 16, weight: .bold))
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(result.checkName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(result.status.rawValue.uppercased())
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(preflightColor(for: result.status))
+                }
+
+                Text(result.detail.isEmpty ? "Pending." : result.detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.white.opacity(0.62))
+            }
+
+            Spacer(minLength: 12)
+
+            Button(rerunningChecks.contains(result.checkID) ? "Running…" : "Re-run") {
+                rerunningChecks.insert(result.checkID)
+                Task {
+                    await store.rerunPreflightCheck(preflightKind(for: result))
+                    await MainActor.run {
+                        _ = rerunningChecks.remove(result.checkID)
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(rerunningChecks.contains(result.checkID))
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func previewCard(title: String, text: String) -> some View {
@@ -495,14 +574,34 @@ public struct ControlRootView: View {
         }
     }
 
-    private var defaultPreflightRows: [PreflightResult] {
-        [
-            PreflightResult(checkName: "Presentation bundle", passed: false, detail: "Compile and load the reference script."),
-            PreflightResult(checkName: "Microphone permission", passed: false, detail: "Not requested yet."),
-            PreflightResult(checkName: "Microphone selection", passed: false, detail: "Pick an input device."),
-            PreflightResult(checkName: "Pinned model cache", passed: false, detail: "Verify the pinned model is cached."),
-            PreflightResult(checkName: "Jump lists", passed: false, detail: "Section and Q&A bookmarks will appear here."),
-        ]
+    private func preflightColor(for status: PreflightCheckStatus) -> Color {
+        switch status {
+        case .pending:
+            return .gray
+        case .running:
+            return .orange
+        case .pass:
+            return .green
+        case .fail:
+            return .red
+        }
+    }
+
+    private func preflightIcon(for status: PreflightCheckStatus) -> String {
+        switch status {
+        case .pending:
+            return "circle.dashed"
+        case .running:
+            return "arrow.triangle.2.circlepath.circle.fill"
+        case .pass:
+            return "checkmark.circle.fill"
+        case .fail:
+            return "xmark.octagon.fill"
+        }
+    }
+
+    private func preflightKind(for result: PreflightResult) -> PreflightCheckKind {
+        PreflightCheckKind(rawValue: result.checkID) ?? .bundleLoaded
     }
 }
 

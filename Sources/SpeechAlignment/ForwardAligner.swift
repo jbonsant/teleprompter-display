@@ -1,22 +1,52 @@
 import Foundation
 import TeleprompterDomain
 
+public struct AlignmentCandidateContext: Sendable, Equatable, Identifiable {
+    public let segmentID: String
+    public let segmentIndex: Int
+    public let text: String
+    public let score: Double
+
+    public var id: String {
+        segmentID
+    }
+
+    public init(segmentID: String, segmentIndex: Int, text: String, score: Double) {
+        self.segmentID = segmentID
+        self.segmentIndex = segmentIndex
+        self.text = text
+        self.score = score
+    }
+}
+
 public struct ForwardAlignmentUpdate: Sendable, Equatable {
     public let segmentID: String?
     public let segmentIndex: Int
     public let confidence: Double
     public let frame: AlignmentFrame
+    public let anchorRecoveryAttempted: Bool
+    public let anchorRecoverySucceeded: Bool
+    public let candidateWindow: [AlignmentCandidateContext]
+    public let recentConfirmedWords: [String]
 
     public init(
         segmentID: String?,
         segmentIndex: Int,
         confidence: Double,
-        frame: AlignmentFrame
+        frame: AlignmentFrame,
+        anchorRecoveryAttempted: Bool,
+        anchorRecoverySucceeded: Bool,
+        candidateWindow: [AlignmentCandidateContext],
+        recentConfirmedWords: [String]
     ) {
         self.segmentID = segmentID
         self.segmentIndex = segmentIndex
         self.confidence = confidence
         self.frame = frame
+        self.anchorRecoveryAttempted = anchorRecoveryAttempted
+        self.anchorRecoverySucceeded = anchorRecoverySucceeded
+        self.candidateWindow = candidateWindow
+        self.recentConfirmedWords = recentConfirmedWords
     }
 }
 
@@ -70,15 +100,19 @@ public struct ForwardAligner: Sendable {
             return (candidateIndex, score)
         }
 
-        var bestCandidate = scoredCandidates
+        let bestLexicalCandidate = scoredCandidates
             .max { lhs, rhs in
                 if lhs.1 == rhs.1 {
                     return lhs.0 > rhs.0
                 }
                 return lhs.1 < rhs.1
             }
+        var bestCandidate = bestLexicalCandidate
+        var anchorRecoveryAttempted = false
+        var anchorRecoverySucceeded = false
 
         if let currentBestCandidate = bestCandidate, currentBestCandidate.1 < policy.confidenceThreshold {
+            anchorRecoveryAttempted = true
             let anchoredCandidates = candidateIndices.map { candidateIndex in
                 let anchorScore = anchorRecoveryScore(
                     fullConfirmedWords: confirmedWords,
@@ -93,11 +127,20 @@ public struct ForwardAligner: Sendable {
                 }
                 return lhs.1 < rhs.1
             }
+            anchorRecoverySucceeded = (bestCandidate?.1 ?? 0) >= policy.confidenceThreshold
         }
 
         let chosenCandidateIndex = bestCandidate?.0
         let chosenConfidence = bestCandidate?.1 ?? 0
         var reportedDebounceCount = debounceCount
+        let candidateWindow = scoredCandidates.map { candidateIndex, score in
+            AlignmentCandidateContext(
+                segmentID: bundle.spokenSegments[candidateIndex].id,
+                segmentIndex: candidateIndex,
+                text: bundle.spokenSegments[candidateIndex].text,
+                score: score
+            )
+        }
 
         if chosenConfidence >= policy.confidenceThreshold, let chosenCandidateIndex {
             if pendingCandidateIndex == chosenCandidateIndex {
@@ -136,7 +179,11 @@ public struct ForwardAligner: Sendable {
             segmentID: currentSegmentID,
             segmentIndex: cursorIndex,
             confidence: chosenConfidence,
-            frame: frame
+            frame: frame,
+            anchorRecoveryAttempted: anchorRecoveryAttempted,
+            anchorRecoverySucceeded: anchorRecoverySucceeded,
+            candidateWindow: candidateWindow,
+            recentConfirmedWords: recentConfirmedWords
         )
     }
 
@@ -169,7 +216,11 @@ public struct ForwardAligner: Sendable {
             segmentID: currentSegmentID,
             segmentIndex: cursorIndex,
             confidence: 1,
-            frame: frame
+            frame: frame,
+            anchorRecoveryAttempted: false,
+            anchorRecoverySucceeded: false,
+            candidateWindow: [],
+            recentConfirmedWords: recentConfirmedWords
         )
     }
 
