@@ -10,6 +10,7 @@ let package = Package(
     products: [
         .executable(name: "teleprompter-display", targets: ["TeleprompterDisplayApp"]),
         .executable(name: "teleprompter-rehearsal", targets: ["RehearsalHarness"]),
+        .executable(name: "asr-benchmark", targets: ["ASRBenchmarkCLI"]),
         .library(name: "TeleprompterDomain", targets: ["TeleprompterDomain"]),
         .library(name: "ScriptCompiler", targets: ["ScriptCompiler"]),
         .library(name: "SpeechAlignment", targets: ["SpeechAlignment"]),
@@ -51,6 +52,10 @@ let package = Package(
                 "ScriptCompiler",
                 "SpeechAlignment",
             ]
+        ),
+        .executableTarget(
+            name: "ASRBenchmarkCLI",
+            dependencies: ["SpeechAlignment"]
         ),
         .testTarget(
             name: "TeleprompterDomainTests",

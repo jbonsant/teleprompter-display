@@ -8,11 +8,18 @@ public struct RehearsalTranscriptionResult: Sendable {
     public let chunks: [ASROutput]
     public let modelName: String
     public let modelDirectory: URL
+    public let performance: ASRPerformanceMetrics
 
-    public init(chunks: [ASROutput], modelName: String, modelDirectory: URL) {
+    public init(
+        chunks: [ASROutput],
+        modelName: String,
+        modelDirectory: URL,
+        performance: ASRPerformanceMetrics
+    ) {
         self.chunks = chunks
         self.modelName = modelName
         self.modelDirectory = modelDirectory
+        self.performance = performance
     }
 }
 
@@ -51,11 +58,7 @@ public struct RehearsalTranscriptionService: Sendable {
     }
 
     public static var defaultModelName: String {
-        #if canImport(WhisperKit)
-        WhisperKit.recommendedModels().default
-        #else
-        "openai_whisper-large-v3"
-        #endif
+        ASRModelCatalog.primaryModelID
     }
 
     public func downloadModel() async throws -> URL {
@@ -70,16 +73,35 @@ public struct RehearsalTranscriptionService: Sendable {
     public func transcribe(audioFileAt audioURL: URL, allowDownload: Bool = true) async throws -> RehearsalTranscriptionResult {
         try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true, attributes: nil)
         #if canImport(WhisperKit)
-        let config = WhisperKitConfig(
-            model: modelName,
-            downloadBase: modelDirectory,
-            voiceActivityDetector: configuration.useVoiceActivityDetection ? EnergyVAD() : nil,
-            verbose: false,
-            logLevel: .none,
-            prewarm: false,
-            load: true,
-            download: allowDownload
-        )
+        let config: WhisperKitConfig
+        if allowDownload {
+            config = WhisperKitConfig(
+                model: modelName,
+                downloadBase: modelDirectory,
+                voiceActivityDetector: configuration.useVoiceActivityDetection ? EnergyVAD() : nil,
+                verbose: false,
+                logLevel: .none,
+                prewarm: false,
+                load: true,
+                download: true
+            )
+        } else if let cachedModelFolder = cachedModelFolder() {
+            config = WhisperKitConfig(
+                modelFolder: cachedModelFolder.path,
+                tokenizerFolder: modelDirectory,
+                voiceActivityDetector: configuration.useVoiceActivityDetection ? EnergyVAD() : nil,
+                verbose: false,
+                logLevel: .none,
+                prewarm: false,
+                load: true,
+                download: false
+            )
+        } else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [
+                NSFilePathErrorKey: modelDirectory.path,
+                NSLocalizedDescriptionKey: "Cached model \(modelName) was not found at \(modelDirectory.path).",
+            ])
+        }
         let whisperKit = try await WhisperKit(config)
         // Leave prompt and prefix tokens unset so chunk decoding stays independent.
         let options = DecodingOptions(
@@ -94,6 +116,7 @@ public struct RehearsalTranscriptionService: Sendable {
             chunkingStrategy: configuration.useVoiceActivityDetection ? .vad : ChunkingStrategy.none
         )
         let results = try await whisperKit.transcribe(audioPath: audioURL.path, decodeOptions: options)
+        let mergedResult = TranscriptionUtilities.mergeTranscriptionResults(results)
         let chunks = results
             .flatMap { $0.segments }
             .sorted { $0.start < $1.start }
@@ -111,10 +134,52 @@ public struct RehearsalTranscriptionService: Sendable {
         return RehearsalTranscriptionResult(
             chunks: chunks,
             modelName: modelName,
-            modelDirectory: whisperKit.modelFolder ?? modelDirectory
+            modelDirectory: whisperKit.modelFolder ?? modelDirectory,
+            performance: ASRPerformanceMetrics(
+                modelLoadSeconds: whisperKit.currentTimings.modelLoading,
+                encoderLoadSeconds: whisperKit.currentTimings.encoderLoadTime,
+                decoderLoadSeconds: whisperKit.currentTimings.decoderLoadTime,
+                tokenizerLoadSeconds: whisperKit.currentTimings.tokenizerLoadTime,
+                transcriptionLatencySeconds: mergedResult.timings.fullPipeline,
+                audioDurationSeconds: mergedResult.timings.inputAudioSeconds,
+                realTimeFactor: mergedResult.timings.realTimeFactor,
+                speedFactor: mergedResult.timings.speedFactor
+            )
         )
         #else
         throw RehearsalTranscriptionError.whisperKitUnavailable
         #endif
+    }
+
+    private func cachedModelFolder() -> URL? {
+        let fileManager = FileManager.default
+        let knownCandidates = [
+            modelDirectory.appendingPathComponent(modelName, isDirectory: true),
+            modelDirectory
+                .appendingPathComponent("models", isDirectory: true)
+                .appendingPathComponent("argmaxinc", isDirectory: true)
+                .appendingPathComponent("whisperkit-coreml", isDirectory: true)
+                .appendingPathComponent(modelName, isDirectory: true),
+        ]
+
+        for candidate in knownCandidates where fileManager.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: modelDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        for case let candidate as URL in enumerator where candidate.lastPathComponent == modelName {
+            if (try? candidate.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                return candidate
+            }
+        }
+
+        return nil
     }
 }
