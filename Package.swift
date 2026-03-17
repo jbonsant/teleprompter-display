@@ -28,6 +28,7 @@ let package = Package(
             name: "TeleprompterAppSupport",
             dependencies: [
                 "TeleprompterDomain",
+                "ScriptCompiler",
                 "SpeechAlignment",
             ]
         ),
