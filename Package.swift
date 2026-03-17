@@ -56,5 +56,12 @@ let package = Package(
             name: "TeleprompterDomainTests",
             dependencies: ["TeleprompterDomain"]
         ),
+        .testTarget(
+            name: "ScriptCompilerTests",
+            dependencies: [
+                "ScriptCompiler",
+                "TeleprompterDomain",
+            ]
+        ),
     ]
 )
