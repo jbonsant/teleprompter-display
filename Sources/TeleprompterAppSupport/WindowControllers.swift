@@ -31,11 +31,30 @@ public final class TeleprompterWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.sharingType = .none
         window.backgroundColor = .black
+        window.level = .floating
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.collectionBehavior = [.fullScreenPrimary, .canJoinAllSpaces]
+        window.styleMask.insert(.fullSizeContentView)
         super.init(window: window)
     }
 
     @available(*, unavailable)
     public required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    public override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        fillTargetDisplay()
+    }
+
+    private func fillTargetDisplay() {
+        guard let window else { return }
+        let targetFrame = window.screen?.frame ?? NSScreen.main?.frame
+        guard let targetFrame else { return }
+
+        window.setFrame(targetFrame, display: true, animate: true)
+        window.makeKeyAndOrderFront(nil)
     }
 }
