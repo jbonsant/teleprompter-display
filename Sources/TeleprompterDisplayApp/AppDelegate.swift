@@ -7,36 +7,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controlWindowController: ControlWindowController?
     private var teleprompterWindowController: TeleprompterWindowController?
 
+    // MARK: - Application lifecycle
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupApplicationSupportDirectories()
+
         controlWindowController = ControlWindowController(store: store)
         teleprompterWindowController = TeleprompterWindowController(store: store)
 
         controlWindowController?.showWindow(nil)
         teleprompterWindowController?.showWindow(nil)
-        positionTeleprompterWindow()
+
+        configureTeleprompterWindow()
+        registerDisplayNotifications()
 
         NSApp.activate(ignoringOtherApps: true)
+        store.statusDetail = "App shell ready. Waiting for presentation bundle."
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
 
-    private func positionTeleprompterWindow() {
-        guard let window = teleprompterWindowController?.window else {
+    // MARK: - Application Support directories
+
+    private func setupApplicationSupportDirectories() {
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return
         }
+        let base = appSupport.appendingPathComponent("TeleprompterDisplay", isDirectory: true)
+        let subdirs = ["BundleCache", "Models", "Logs"]
 
+        for subdir in subdirs {
+            let url = base.appendingPathComponent(subdir, isDirectory: true)
+            if !fm.fileExists(atPath: url.path) {
+                try? fm.createDirectory(at: url, withIntermediateDirectories: true)
+            }
+        }
+    }
+
+    // MARK: - Teleprompter window configuration
+
+    private func configureTeleprompterWindow() {
+        guard let window = teleprompterWindowController?.window else { return }
+
+        // Float above other windows
+        window.level = .floating
+
+        // Position on external display if available
+        positionWindowOnBestScreen(window)
+    }
+
+    private func positionWindowOnBestScreen(_ window: NSWindow) {
         let candidateScreen = NSScreen.screens.dropFirst().first ?? NSScreen.main
-        guard let frame = candidateScreen?.visibleFrame else {
-            return
-        }
+        guard let frame = candidateScreen?.visibleFrame else { return }
 
-        let size = window.frame.size
-        let origin = NSPoint(
-            x: frame.minX + max(0, frame.width - size.width) / 2,
-            y: frame.minY + max(0, frame.height - size.height) / 2
+        // Fill the target screen
+        window.setFrame(frame, display: true)
+    }
+
+    // MARK: - Display connect/disconnect
+
+    private func registerDisplayNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screensDidChange(_:)),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
         )
-        window.setFrameOrigin(origin)
+    }
+
+    @objc private func screensDidChange(_ notification: Notification) {
+        guard let window = teleprompterWindowController?.window else { return }
+
+        if NSScreen.screens.count > 1 {
+            // External display connected — move teleprompter there
+            positionWindowOnBestScreen(window)
+            store.statusDetail = "External display detected. Teleprompter moved."
+        } else {
+            // Only built-in display — keep teleprompter on main
+            positionWindowOnBestScreen(window)
+            store.statusDetail = "Single display. Teleprompter on main screen."
+        }
     }
 }
