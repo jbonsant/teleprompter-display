@@ -1,10 +1,26 @@
 import Foundation
+import ScriptCompiler
 import SpeechAlignment
 import SwiftUI
 import TeleprompterDomain
 
 @MainActor
 public final class AppSessionStore: ObservableObject {
+    public struct ControlBookmarkSummary: Identifiable, Hashable, Sendable {
+        public enum Kind: String, Sendable {
+            case section
+            case question
+        }
+
+        public let id: String
+        public let title: String
+        public let targetSegmentID: String
+        public let sectionID: String
+        public let segmentIndex: Int
+        public let slideIndex: Int?
+        public let kind: Kind
+    }
+
     private struct PlaceholderSegment {
         let title: String
         let blocks: [String]
@@ -82,6 +98,7 @@ public final class AppSessionStore: ObservableObject {
     public private(set) var bundle: PresentationBundle?
 
     private let asrService: WhisperStreamingASRService
+    private let modelDirectory: URL
     private var hypothesisTask: Task<Void, Never>?
     private var confirmedTask: Task<Void, Never>?
     private var sessionLog: SessionLog
@@ -120,6 +137,7 @@ public final class AppSessionStore: ObservableObject {
         self.lastErrorMessage = nil
         self.sessionLog = SessionLog()
         self.asrService = WhisperStreamingASRService(configuration: asrConfiguration)
+        self.modelDirectory = RehearsalTranscriptionService.defaultModelDirectory
 
         appendDiagnosticEvent(
             DiagnosticEvent(
@@ -132,6 +150,8 @@ public final class AppSessionStore: ObservableObject {
             )
         )
 
+        _ = loadReferenceBundleIfAvailable()
+
         Task { [weak self] in
             await self?.refreshAudioInputs()
         }
@@ -143,6 +163,217 @@ public final class AppSessionStore: ObservableObject {
         confirmedTask?.cancel()
         Task {
             await asrService.stop()
+        }
+    }
+
+    public var stateDisplayName: String {
+        switch sessionState {
+        case .idle:
+            return "Idle"
+        case .preflight:
+            return "Preflight"
+        case .ready:
+            return "Ready"
+        case .countdown:
+            return "Countdown"
+        case .liveAuto:
+            return "Live Auto"
+        case .liveFrozen:
+            return "Frozen"
+        case .manualScroll:
+            return "Manual Scroll"
+        case .recoveringLocal:
+            return "Recovering Local"
+        case .recoveringCloud:
+            return "Recovering Cloud"
+        case .error:
+            return "Error"
+        }
+    }
+
+    public var canMoveToPreviousSegment: Bool {
+        currentSegmentIndex > 0
+    }
+
+    public var canMoveToNextSegment: Bool {
+        currentSegmentIndex < segmentCount - 1
+    }
+
+    public var currentSegmentNumber: Int {
+        guard segmentCount > 0 else { return 0 }
+        return min(currentSegmentIndex + 1, segmentCount)
+    }
+
+    public var segmentPositionText: String {
+        "\(currentSegmentNumber)/\(segmentCount)"
+    }
+
+    public var currentSlideNumber: Int {
+        slideMetrics.current
+    }
+
+    public var totalSlideCount: Int {
+        slideMetrics.total
+    }
+
+    public var attentionBorderRequired: Bool {
+        sessionState == .error || sessionState == .manualScroll
+    }
+
+    public var playPauseButtonLabel: String {
+        switch sessionState {
+        case .ready, .countdown:
+            return "Play"
+        case .liveAuto, .recoveringLocal, .recoveringCloud, .manualScroll:
+            return "Pause"
+        case .liveFrozen:
+            return "Play"
+        case .idle, .preflight, .error:
+            return "Play"
+        }
+    }
+
+    public var freezeButtonLabel: String {
+        sessionState == .liveFrozen ? "Unfreeze" : "Freeze"
+    }
+
+    public var canTriggerPlayPause: Bool {
+        switch sessionState {
+        case .ready, .countdown, .liveAuto, .liveFrozen, .manualScroll, .recoveringLocal, .recoveringCloud:
+            return true
+        case .idle, .preflight, .error:
+            return false
+        }
+    }
+
+    public var canTriggerFreeze: Bool {
+        switch sessionState {
+        case .liveAuto, .liveFrozen, .manualScroll, .recoveringLocal, .recoveringCloud:
+            return true
+        case .idle, .preflight, .ready, .countdown, .error:
+            return false
+        }
+    }
+
+    public var activeTimerDate: Date? {
+        switch sessionState {
+        case .countdown:
+            return countdownTargetDate
+        default:
+            return sessionStartedAt
+        }
+    }
+
+    public var bookmarkSummaries: [ControlBookmarkSummary] {
+        guard let bundle else {
+            return placeholderBookmarkSummaries()
+        }
+
+        let segmentIndexes = Dictionary(uniqueKeysWithValues: bundle.spokenSegments.enumerated().map { ($0.element.id, $0.offset) })
+        let slideIndexBySegment = Dictionary(uniqueKeysWithValues: bundle.slideMarkers.map { ($0.targetSegmentID, $0.index) })
+
+        return bundle.bookmarks.compactMap { bookmark in
+            guard let segmentIndex = segmentIndexes[bookmark.targetSegmentID] else { return nil }
+            let kind: ControlBookmarkSummary.Kind = bookmark.title.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("Q") ? .question : .section
+            return ControlBookmarkSummary(
+                id: bookmark.id,
+                title: bookmark.title,
+                targetSegmentID: bookmark.targetSegmentID,
+                sectionID: bookmark.sectionID,
+                segmentIndex: segmentIndex,
+                slideIndex: slideIndexBySegment[bookmark.targetSegmentID],
+                kind: kind
+            )
+        }
+    }
+
+    public var sectionBookmarks: [ControlBookmarkSummary] {
+        bookmarkSummaries.filter { $0.kind == .section }
+    }
+
+    public var questionBookmarks: [ControlBookmarkSummary] {
+        bookmarkSummaries.filter { $0.kind == .question }
+    }
+
+    public func isCurrentBookmark(_ bookmark: ControlBookmarkSummary) -> Bool {
+        bookmark.segmentIndex == currentSegmentIndex
+    }
+
+    public func jumpToBookmark(_ bookmark: ControlBookmarkSummary) {
+        jumpToSegment(index: bookmark.segmentIndex, reason: "bookmark:\(bookmark.id)")
+    }
+
+    public func reloadReferenceBundle() {
+        if loadReferenceBundleIfAvailable() {
+            statusDetail = "Loaded reference presentation bundle."
+        } else {
+            statusDetail = "No reference presentation script found."
+        }
+    }
+
+    public func runPreflight() async {
+        beginPreflight()
+        await refreshAudioInputs()
+
+        let microphoneGranted = await requestMicrophonePermission()
+        let bundleLoaded = loadReferenceBundleIfAvailable()
+        let micSelected = selectedAudioInputID != nil || !availableAudioInputs.isEmpty
+        let modelCached = locateCachedModelFolder(named: activeModelID) != nil
+        let promptsReady = !sectionBookmarks.isEmpty
+
+        let results = [
+            PreflightResult(
+                checkName: "Presentation bundle",
+                passed: bundleLoaded,
+                detail: bundleLoaded ? "Reference script compiled and loaded." : "Missing presentation script in references/."
+            ),
+            PreflightResult(
+                checkName: "Microphone permission",
+                passed: microphoneGranted,
+                detail: microphoneGranted ? "Capture access granted." : "Grant microphone access in System Settings."
+            ),
+            PreflightResult(
+                checkName: "Microphone selection",
+                passed: micSelected,
+                detail: micSelected ? selectedAudioInputName : "No capture device detected."
+            ),
+            PreflightResult(
+                checkName: "Pinned model cache",
+                passed: modelCached,
+                detail: modelCached ? activeModelID : "Pinned ASR model is not cached locally."
+            ),
+            PreflightResult(
+                checkName: "Jump lists",
+                passed: promptsReady,
+                detail: promptsReady ? "\(bookmarkSummaries.count) bookmarks ready." : "Compile the reference script before going live."
+            ),
+        ]
+
+        completePreflight(results)
+    }
+
+    public func handlePlayPause() {
+        switch sessionState {
+        case .ready:
+            startCountdown()
+        case .countdown:
+            beginLiveAuto()
+        case .liveAuto, .liveFrozen, .manualScroll, .recoveringLocal, .recoveringCloud:
+            handleTogglePause()
+        case .idle, .preflight, .error:
+            statusDetail = "Run preflight before starting playback."
+        }
+    }
+
+    public func handleFreeze() {
+        switch sessionState {
+        case .liveFrozen:
+            transition(to: .liveAuto, reason: "Freeze released", override: true)
+        case .liveAuto, .manualScroll, .recoveringLocal, .recoveringCloud:
+            isEmergencyScrolling = false
+            transition(to: .liveFrozen, reason: "Transport frozen", override: true)
+        case .idle, .preflight, .ready, .countdown, .error:
+            statusDetail = "Freeze is available after the live session starts."
         }
     }
 
@@ -242,7 +473,7 @@ public final class AppSessionStore: ObservableObject {
     }
 
     public func handleNextSegment() {
-        guard hasNextSegment else { return }
+        guard canMoveToNextSegment else { return }
         currentSegmentIndex += 1
         updateDisplayForCurrentSegment()
         appendManualJumpEvent(reason: "nextSegment")
@@ -250,7 +481,7 @@ public final class AppSessionStore: ObservableObject {
     }
 
     public func handlePreviousSegment() {
-        guard currentSegmentIndex > 0 else { return }
+        guard canMoveToPreviousSegment else { return }
         currentSegmentIndex -= 1
         updateDisplayForCurrentSegment()
         appendManualJumpEvent(reason: "previousSegment")
@@ -340,12 +571,91 @@ public final class AppSessionStore: ObservableObject {
 
     // MARK: - Internal helpers
 
-    private var hasNextSegment: Bool {
-        currentSegmentIndex < segmentCount - 1
-    }
-
     private var segmentCount: Int {
         bundle?.spokenSegments.count ?? placeholderSegments.count
+    }
+
+    private var slideMetrics: (current: Int, total: Int) {
+        if let bundle {
+            let totalSlides = bundle.slideMarkers.count
+            let slidesPassedCount = bundle.slideMarkers.filter { marker in
+                guard let markerSegmentIdx = bundle.spokenSegments.firstIndex(where: { $0.id == marker.targetSegmentID }) else {
+                    return false
+                }
+                return markerSegmentIdx <= currentSegmentIndex
+            }.count
+            return (slidesPassedCount, totalSlides)
+        }
+
+        let components = slideCounter.split(separator: " ").last?.split(separator: "/") ?? []
+        if components.count == 2,
+           let current = Int(components[0]),
+           let total = Int(components[1]) {
+            return (current, total)
+        }
+        return (0, 0)
+    }
+
+    private func placeholderBookmarkSummaries() -> [ControlBookmarkSummary] {
+        placeholderSegments.enumerated().map { index, segment in
+            ControlBookmarkSummary(
+                id: "placeholder-bookmark-\(index)",
+                title: segment.title,
+                targetSegmentID: "placeholder-segment-\(index)",
+                sectionID: "placeholder-section-\(index)",
+                segmentIndex: index,
+                slideIndex: index,
+                kind: .section
+            )
+        }
+    }
+
+    @discardableResult
+    private func loadReferenceBundleIfAvailable() -> Bool {
+        for name in ["presentation-script.md", "presentation-script-opus.md"] {
+            let url = referenceDirectory.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            guard let markdown = try? String(contentsOf: url, encoding: .utf8) else { continue }
+
+            let compiledBundle = ScriptCompiler().compile(markdown: markdown, source: name)
+            loadBundle(compiledBundle)
+            return true
+        }
+
+        return false
+    }
+
+    private func locateCachedModelFolder(named modelName: String) -> URL? {
+        let fileManager = FileManager.default
+        let baseDirectory = modelDirectory
+        let candidates = [
+            baseDirectory.appendingPathComponent(modelName, isDirectory: true),
+            baseDirectory
+                .appendingPathComponent("models", isDirectory: true)
+                .appendingPathComponent("argmaxinc", isDirectory: true)
+                .appendingPathComponent("whisperkit-coreml", isDirectory: true)
+                .appendingPathComponent(modelName, isDirectory: true),
+        ]
+
+        for candidate in candidates where fileManager.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: baseDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        for case let candidate as URL in enumerator where candidate.lastPathComponent == modelName {
+            if (try? candidate.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                return candidate
+            }
+        }
+
+        return nil
     }
 
     private func bindASRStreamsIfNeeded() {
@@ -402,6 +712,7 @@ public final class AppSessionStore: ObservableObject {
         latestConfirmed = event
         statusDetail = "Confirmed: \(event.text)"
         latencySnapshot.latestConfirmedLatencySeconds = event.latencySeconds
+        alignmentConfidence = max(0.15, min(1, 1 - (event.latencySeconds / max(latencySnapshot.confirmedTargetSeconds, 0.1))))
         appendDiagnosticEvent(
             DiagnosticEvent(
                 eventType: .asrChunk,
@@ -476,6 +787,7 @@ public final class AppSessionStore: ObservableObject {
             }
         case .liveFrozen:
             isPaused = true
+            isEmergencyScrolling = false
         case .manualScroll:
             isEmergencyScrolling = true
         case .recoveringLocal, .recoveringCloud:
@@ -539,14 +851,8 @@ public final class AppSessionStore: ObservableObject {
             .filter { segmentIDs.contains($0.segmentID) }
             .map(\.text)
 
-        let totalSlides = bundle.slideMarkers.count
-        let slidesPassedCount = bundle.slideMarkers.filter { marker in
-            guard let markerSegmentIdx = bundle.spokenSegments.firstIndex(where: { $0.id == marker.targetSegmentID }) else {
-                return false
-            }
-            return markerSegmentIdx <= currentSegmentIndex
-        }.count
-        slideCounter = "Slide \(slidesPassedCount)/\(totalSlides)"
+        let metrics = slideMetrics
+        slideCounter = "Slide \(metrics.current)/\(metrics.total)"
     }
 
     private func applyPlaceholderSegment(at index: Int) {
