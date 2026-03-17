@@ -26,7 +26,10 @@ let package = Package(
         ),
         .target(
             name: "TeleprompterAppSupport",
-            dependencies: ["TeleprompterDomain"]
+            dependencies: [
+                "TeleprompterDomain",
+                "SpeechAlignment",
+            ]
         ),
         .target(
             name: "TeleprompterDomain"
