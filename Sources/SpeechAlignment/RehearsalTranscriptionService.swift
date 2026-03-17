@@ -121,7 +121,7 @@ public struct RehearsalTranscriptionService: Sendable {
             .flatMap { $0.segments }
             .sorted { $0.start < $1.start }
             .map { segment in
-                let confirmedText = segment.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                let confirmedText = Self.normalizeTranscription(segment.text)
                 return ASROutput(
                     hypothesisText: confirmedText,
                     confirmedText: confirmedText,
@@ -153,5 +153,12 @@ public struct RehearsalTranscriptionService: Sendable {
 
     private func cachedModelFolder() -> URL? {
         ModelArtifactLocator.locateModelFolder(named: modelName, in: modelDirectory)
+    }
+
+    private static func normalizeTranscription(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: #"<\|[^>]+\|>"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

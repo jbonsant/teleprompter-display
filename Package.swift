@@ -79,5 +79,13 @@ let package = Package(
                 "TeleprompterDomain",
             ]
         ),
+        .testTarget(
+            name: "TeleprompterAppSupportTests",
+            dependencies: [
+                "TeleprompterAppSupport",
+                "SpeechAlignment",
+                "TeleprompterDomain",
+            ]
+        ),
     ]
 )

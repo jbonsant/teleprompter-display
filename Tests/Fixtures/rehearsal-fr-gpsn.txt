@@ -1,0 +1,11 @@
+Merci de nous recevoir. Je suis Jeremie Bonsant, fondateur de Webisoft. Aujourd'hui six sujets en soixante minutes, puis vos questions. Le GPSN est un projet de numérisation du métier notarial. La technologie est au service de la profession, pas l'inverse.
+
+Cette solution pour nous commence par le métier notarial. La technologie vient après, au service du parcours, de la conformité et du temps gagné pour le notaire. Point de départ projet de numérisation métier pas simple projet TI. Consultant notarial externe dédié, soixante-dix heures budgétées pour valider les parcours et les règles métier.
+
+Cinq profils couverts de bout en bout: citoyen, notaire, administrateur Chambre, administrateur système, auditeur. RBAC distinct pour chaque profil. Parcours, écrans, permissions, journaux.
+
+Dimensionnement concret dès la conception. Deux mille sept cents notaires actifs, croissance projetée de dix pour cent par an, trois mille cinq cent quatre-vingt-quatorze notaires à trois ans. Trois mille sessions simultanées, quatre mille interactions quotidiennes côté services notariaux. Cartographie modulaire pensée pour le travail réel: demandes de service, coffre-fort numérique, rendez-vous et calendrier, intégrations tierces, administration et supervision.
+
+L'architecture c'est ce qui détermine si la solution va pouvoir évoluer, se transférer et être maintenue. On a fait des choix défensifs et éprouvés. Architecture tri-couche: React plus TypeScript pour l'interface, Django pour la logique métier, PostgreSQL pour la persistance. Trois schémas logiques distincts pour isoler les périmètres sensibles.
+
+Sept services conteneurisés: frontend, API, Celery worker, Celery Beat, PostgreSQL, RabbitMQ, Redis. Cycles de vie indépendants. Pile cent pour cent open source. Django BSD-3, React MIT, PostgreSQL licence PostgreSQL. Zéro redevance, zéro verrouillage fournisseur. Portabilité réelle: migration possible vers eStruxture, Mantle, ThinkOn sans refonte applicative.

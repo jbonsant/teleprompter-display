@@ -1,0 +1,47 @@
+{
+  "recordedAt": "2026-03-17T19:25:00-04:00",
+  "machine": {
+    "macOSVersion": "15.7.3",
+    "buildVersion": "24G419",
+    "modelName": "MacBook Pro",
+    "modelIdentifier": "Mac16,7",
+    "chip": "Apple M4 Pro",
+    "memoryGB": 48
+  },
+  "asr": {
+    "primaryModelID": "openai_whisper-large-v3_turbo",
+    "backupModelID": "openai_whisper-large-v3-v20240930_turbo_632MB",
+    "qualityAlternativeModelID": "openai_whisper-large-v3",
+    "languageCode": "fr",
+    "useVoiceActivityDetection": true,
+    "conditionOnPreviousText": false,
+    "usesConfirmedStreamForAlignment": true,
+    "allowModelDownloadIfMissing": false,
+    "warmupThresholdSeconds": 5.0,
+    "speechUpdateLatencyTargetP95Seconds": 2.5,
+    "peakMemoryBudgetGigabytes": 2.0
+  },
+  "alignment": {
+    "minimumForwardWindowWords": 100,
+    "maximumForwardWindowWords": 300,
+    "confidenceThreshold": 0.7,
+    "debounceFrames": 3
+  },
+  "cloudRecovery": {
+    "enabledByDefault": false,
+    "modelName": "llama-3.3-70b-versatile",
+    "lowConfidenceThreshold": 0.55,
+    "lowConfidenceWindowSeconds": 30.0,
+    "maxRetryCount": 1,
+    "envVar": "GROQ_API_KEY"
+  },
+  "manualControls": {
+    "manualJumpResponseTargetMilliseconds": 100.0,
+    "emergencyScrollResponseTargetMilliseconds": 200.0
+  },
+  "rehearsalFixture": {
+    "transcriptPath": "Tests/Fixtures/rehearsal-fr-gpsn.txt",
+    "audioPath": "Tests/Fixtures/rehearsal-fr-gpsn.aiff",
+    "durationSeconds": 137.083265
+  }
+}
