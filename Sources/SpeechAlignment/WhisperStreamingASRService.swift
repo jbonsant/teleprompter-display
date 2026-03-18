@@ -111,9 +111,12 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
         var currentText = ""
         var unconfirmedSegments: [TranscriptionSegment] = []
         var lastHypothesisText = ""
+        var latestHypothesisEvent: ASRTranscriptionEvent?
         var latestConfirmedEvent: ASRTranscriptionEvent?
         var streamStartedAt: Date?
     }
+
+    private static let warmLoadTargetSeconds: TimeInterval = 5
 
     public let configuration: ASRConfiguration
     public let modelDirectory: URL
@@ -125,6 +128,8 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
     private var streamingTask: Task<Void, Never>?
     private var state = StreamingState()
     private var latencySnapshot: ASRLatencySnapshot
+    private var preparedModelDirectory: URL?
+    private var preparedModelLoadSeconds: TimeInterval?
 
     private var hypothesisContinuations: [UUID: AsyncStream<ASRTranscriptionEvent>.Continuation] = [:]
     private var confirmedContinuations: [UUID: AsyncStream<ASRTranscriptionEvent>.Continuation] = [:]
@@ -168,14 +173,21 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
     }
 
     public func selectInputDevice(id: String?) async {
+        let previousDeviceID = selectedInputDeviceID
         guard
             let id,
             let parsedID = UInt32(id)
         else {
             selectedInputDeviceID = nil
+            if previousDeviceID != nil {
+                resetPreparedPipeline()
+            }
             return
         }
         selectedInputDeviceID = parsedID
+        if previousDeviceID != parsedID {
+            resetPreparedPipeline()
+        }
     }
 
     public func currentLatencySnapshot() async -> ASRLatencySnapshot {
@@ -213,28 +225,11 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
             throw WhisperStreamingASRError.microphonePermissionDenied
         }
 
-        let audioProcessor = AudioProcessor()
-        let whisperKit = try await buildWhisperKit(audioProcessor: audioProcessor)
-        guard let tokenizer = whisperKit.tokenizer else {
-            throw WhisperStreamingASRError.missingTokenizer
+        _ = try await ensurePreparedPipeline(forceReload: false)
+        guard let audioProcessor else {
+            throw WhisperStreamingASRError.pipelineNotReady
         }
-
-        let transcribeTask = TranscribeTask(
-            currentTimings: TranscriptionTimings(),
-            progress: whisperKit.progress,
-            audioProcessor: audioProcessor,
-            audioEncoder: whisperKit.audioEncoder,
-            featureExtractor: whisperKit.featureExtractor,
-            segmentSeeker: whisperKit.segmentSeeker,
-            textDecoder: whisperKit.textDecoder,
-            tokenizer: tokenizer
-        )
-
-        self.audioProcessor = audioProcessor
-        self.whisperKit = whisperKit
-        self.transcribeTask = transcribeTask
         self.state = StreamingState(streamStartedAt: Date())
-        self.latencySnapshot.modelLoadSeconds = whisperKit.currentTimings.modelLoading
 
         try audioProcessor.startRecordingLive(inputDeviceID: selectedInputDeviceID) { _ in
             // AudioProcessor retains the rolling sample buffer for the decode loop.
@@ -259,14 +254,21 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
 
     public func warmModel() async throws -> ASRModelWarmupResult {
         #if canImport(WhisperKit)
-        let startedAt = Date()
-        let whisperKit = try await buildWarmupWhisperKit()
-        let loadSeconds = max(Date().timeIntervalSince(startedAt), whisperKit.currentTimings.modelLoading)
-        latencySnapshot.modelLoadSeconds = loadSeconds
+        let initialLoadSeconds = try await ensurePreparedPipeline(forceReload: false)
+        var verifiedWarmLoadSeconds = initialLoadSeconds
+        var coldLoadSeconds: TimeInterval?
+
+        if initialLoadSeconds > Self.warmLoadTargetSeconds {
+            coldLoadSeconds = initialLoadSeconds
+            resetPreparedPipeline()
+            verifiedWarmLoadSeconds = try await ensurePreparedPipeline(forceReload: true)
+        }
+
         return ASRModelWarmupResult(
             modelID: configuration.modelID,
-            loadSeconds: loadSeconds,
-            modelDirectory: whisperKit.modelFolder ?? modelDirectory
+            loadSeconds: verifiedWarmLoadSeconds,
+            modelDirectory: preparedModelDirectory ?? modelDirectory,
+            initialLoadSeconds: coldLoadSeconds
         )
         #else
         throw WhisperStreamingASRError.whisperKitUnavailable
@@ -282,20 +284,21 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
         }
 
         let deadline = Date().addingTimeInterval(timeoutSeconds)
+        var lastObservedResult: ASRMicrophoneSanityResult?
 
         while Date() < deadline {
-            if let event = state.latestConfirmedEvent, !event.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let metrics = Self.evaluateFrenchSanity(text: event.text, prompt: prompt)
-                return ASRMicrophoneSanityResult(
-                    prompt: prompt,
-                    transcribedText: event.text,
-                    overlapScore: metrics.overlapScore,
-                    looksFrench: metrics.looksFrench,
-                    latencySeconds: event.latencySeconds
-                )
+            if let result = currentMicrophoneSanityResult(prompt: prompt) {
+                if result.looksFrench {
+                    return result
+                }
+                lastObservedResult = result
             }
 
             try await Task.sleep(for: .milliseconds(100))
+        }
+
+        if let lastObservedResult {
+            return lastObservedResult
         }
 
         throw WhisperStreamingASRError.microphoneSanityTimedOut(prompt)
@@ -312,8 +315,11 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
         state.currentText = ""
         state.unconfirmedSegments = []
         state.lastHypothesisText = ""
+        state.latestHypothesisEvent = nil
         state.latestConfirmedEvent = nil
         state.streamStartedAt = nil
+        preparedModelDirectory = nil
+        preparedModelLoadSeconds = nil
     }
 
     private func removeHypothesisContinuation(_ streamID: UUID) {
@@ -325,7 +331,7 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
     }
 
     #if canImport(WhisperKit)
-    private func buildWhisperKit(audioProcessor: AudioProcessor) async throws -> WhisperKit {
+    private func buildWhisperKit(audioProcessor: AudioProcessor, prewarm: Bool) async throws -> WhisperKit {
         if let cachedModelFolder = ModelArtifactLocator.locateModelFolder(named: configuration.modelID, in: modelDirectory) {
             let config = WhisperKitConfig(
                 modelFolder: cachedModelFolder.path,
@@ -334,7 +340,7 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
                 voiceActivityDetector: configuration.useVoiceActivityDetection ? EnergyVAD() : nil,
                 verbose: false,
                 logLevel: .none,
-                prewarm: false,
+                prewarm: prewarm,
                 load: true,
                 download: false
             )
@@ -352,39 +358,7 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
             voiceActivityDetector: configuration.useVoiceActivityDetection ? EnergyVAD() : nil,
             verbose: false,
             logLevel: .none,
-            prewarm: false,
-            load: true,
-            download: true
-        )
-        return try await WhisperKit(config)
-    }
-
-    private func buildWarmupWhisperKit() async throws -> WhisperKit {
-        if let cachedModelFolder = ModelArtifactLocator.locateModelFolder(named: configuration.modelID, in: modelDirectory) {
-            let config = WhisperKitConfig(
-                modelFolder: cachedModelFolder.path,
-                tokenizerFolder: modelDirectory,
-                voiceActivityDetector: configuration.useVoiceActivityDetection ? EnergyVAD() : nil,
-                verbose: false,
-                logLevel: .none,
-                prewarm: true,
-                load: true,
-                download: false
-            )
-            return try await WhisperKit(config)
-        }
-
-        guard configuration.allowModelDownloadIfMissing else {
-            throw WhisperStreamingASRError.modelNotCached(configuration.modelID)
-        }
-
-        let config = WhisperKitConfig(
-            model: configuration.modelID,
-            downloadBase: modelDirectory,
-            voiceActivityDetector: configuration.useVoiceActivityDetection ? EnergyVAD() : nil,
-            verbose: false,
-            logLevel: .none,
-            prewarm: true,
+            prewarm: prewarm,
             load: true,
             download: true
         )
@@ -490,7 +464,7 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
     }
 
     fileprivate func onProgressCallback(_ progress: TranscriptionProgress, audioEndSeconds: TimeInterval) async {
-        let currentText = progress.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentText = Self.normalizeTranscription(progress.text)
         state.currentFallbacks = Int(progress.timings.totalDecodingFallbacks)
         state.currentText = currentText
 
@@ -507,7 +481,7 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
         audioStartSeconds: TimeInterval,
         audioEndSeconds: TimeInterval
     ) async {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = Self.normalizeTranscription(text)
         guard !normalized.isEmpty, normalized != state.lastHypothesisText else { return }
         state.lastHypothesisText = normalized
 
@@ -518,6 +492,7 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
             latencySeconds: observedLatency(forAudioEnd: audioEndSeconds),
             modelID: configuration.modelID
         )
+        state.latestHypothesisEvent = event
         latencySnapshot.latestHypothesisLatencySeconds = event.latencySeconds
         for continuation in hypothesisContinuations.values {
             continuation.yield(event)
@@ -525,8 +500,10 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
     }
 
     private func emitConfirmed(_ segment: TranscriptionSegment) async {
+        let normalized = Self.normalizeTranscription(segment.text)
+        guard !normalized.isEmpty else { return }
         let event = ASRTranscriptionEvent(
-            text: segment.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            text: normalized,
             audioStartSeconds: TimeInterval(segment.start),
             audioEndSeconds: TimeInterval(segment.end),
             latencySeconds: observedLatency(forAudioEnd: TimeInterval(segment.end)),
@@ -543,6 +520,52 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
         guard let streamStartedAt = state.streamStartedAt else { return 0 }
         let elapsed = Date().timeIntervalSince(streamStartedAt)
         return max(0, elapsed - audioEndSeconds)
+    }
+
+    private func ensurePreparedPipeline(forceReload: Bool) async throws -> TimeInterval {
+        if !forceReload, audioProcessor != nil, whisperKit != nil, transcribeTask != nil {
+            return preparedModelLoadSeconds ?? latencySnapshot.modelLoadSeconds ?? 0
+        }
+
+        if forceReload {
+            resetPreparedPipeline()
+        }
+
+        let audioProcessor = AudioProcessor()
+        let startedAt = Date()
+        let whisperKit = try await buildWhisperKit(audioProcessor: audioProcessor, prewarm: true)
+        guard let tokenizer = whisperKit.tokenizer else {
+            throw WhisperStreamingASRError.missingTokenizer
+        }
+
+        let transcribeTask = TranscribeTask(
+            currentTimings: TranscriptionTimings(),
+            progress: whisperKit.progress,
+            audioProcessor: audioProcessor,
+            audioEncoder: whisperKit.audioEncoder,
+            featureExtractor: whisperKit.featureExtractor,
+            segmentSeeker: whisperKit.segmentSeeker,
+            textDecoder: whisperKit.textDecoder,
+            tokenizer: tokenizer
+        )
+
+        let loadSeconds = max(Date().timeIntervalSince(startedAt), whisperKit.currentTimings.modelLoading)
+        self.audioProcessor = audioProcessor
+        self.whisperKit = whisperKit
+        self.transcribeTask = transcribeTask
+        self.preparedModelDirectory = whisperKit.modelFolder ?? modelDirectory
+        self.preparedModelLoadSeconds = loadSeconds
+        self.latencySnapshot.modelLoadSeconds = loadSeconds
+        return loadSeconds
+    }
+
+    private func resetPreparedPipeline() {
+        audioProcessor?.stopRecording()
+        audioProcessor = nil
+        whisperKit = nil
+        transcribeTask = nil
+        preparedModelDirectory = nil
+        preparedModelLoadSeconds = nil
     }
 
     private func finishStreams() async {
@@ -593,8 +616,47 @@ public actor WhisperStreamingASRService: StreamingASRServiceControlling {
         return (overlap, looksFrench)
     }
 
-    private static func normalizedTokens(from text: String) -> [String] {
+    private func currentMicrophoneSanityResult(prompt: String) -> ASRMicrophoneSanityResult? {
+        if let event = state.latestConfirmedEvent {
+            let metrics = Self.evaluateFrenchSanity(text: event.text, prompt: prompt)
+            if metrics.looksFrench {
+                return ASRMicrophoneSanityResult(
+                    prompt: prompt,
+                    transcribedText: event.text,
+                    overlapScore: metrics.overlapScore,
+                    looksFrench: metrics.looksFrench,
+                    latencySeconds: event.latencySeconds,
+                    source: "confirmed"
+                )
+            }
+        }
+
+        if let event = state.latestHypothesisEvent {
+            let metrics = Self.evaluateFrenchSanity(text: event.text, prompt: prompt)
+            if metrics.looksFrench {
+                return ASRMicrophoneSanityResult(
+                    prompt: prompt,
+                    transcribedText: event.text,
+                    overlapScore: metrics.overlapScore,
+                    looksFrench: metrics.looksFrench,
+                    latencySeconds: event.latencySeconds,
+                    source: "hypothesis"
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private static func normalizeTranscription(_ text: String) -> String {
         text
+            .replacingOccurrences(of: #"<\|[^>]+\|>"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func normalizedTokens(from text: String) -> [String] {
+        normalizeTranscription(text)
             .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "fr_CA"))
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }

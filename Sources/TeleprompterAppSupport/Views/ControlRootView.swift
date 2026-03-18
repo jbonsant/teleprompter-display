@@ -3,11 +3,19 @@ import TeleprompterDomain
 
 public struct ControlRootView: View {
     @ObservedObject private var store: AppSessionStore
+    private let onShowDisplay: () -> Void
+    private let onRestartApp: () -> Void
     @State private var isRunningPreflight = false
     @State private var rerunningChecks: Set<String> = []
 
-    public init(store: AppSessionStore) {
+    public init(
+        store: AppSessionStore,
+        onShowDisplay: @escaping () -> Void = {},
+        onRestartApp: @escaping () -> Void = {}
+    ) {
         self.store = store
+        self.onShowDisplay = onShowDisplay
+        self.onRestartApp = onRestartApp
     }
 
     public var body: some View {
@@ -66,6 +74,20 @@ public struct ControlRootView: View {
 
             Spacer(minLength: 20)
 
+            HStack(spacing: 10) {
+                Button(action: onShowDisplay) {
+                    topBarActionLabel("Show Display", systemImage: "rectangle.on.rectangle")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+
+                Button(action: onRestartApp) {
+                    topBarActionLabel("Restart App", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+            }
+
             timerMetricCard
             topMetricCard(title: "Slide", value: store.slideCounter)
             topMetricCard(title: "Segment", value: store.segmentPositionText)
@@ -81,6 +103,13 @@ public struct ControlRootView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .background(stateBadgeColor.gradient, in: Capsule())
+    }
+
+    private func topBarActionLabel(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
     }
 
     private var transportPanel: some View {

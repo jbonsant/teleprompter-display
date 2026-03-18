@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = AppSessionStore()
     private var controlWindowController: ControlWindowController?
     private var teleprompterWindowController: TeleprompterWindowController?
+    private var windowCoordinator: WindowCoordinator?
     private var keyEventMonitor: Any?
     private var isRunningKeyboardProbe = false
     private var observedProbeKeyCodes: Set<UInt16> = []
@@ -15,13 +16,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupApplicationSupportDirectories()
 
-        controlWindowController = ControlWindowController(store: store)
         teleprompterWindowController = TeleprompterWindowController(store: store)
+        controlWindowController = ControlWindowController(
+            store: store,
+            onShowDisplay: { [weak self] in
+                self?.windowCoordinator?.showTeleprompterWindow()
+            },
+            onRestartApp: { [weak self] in
+                self?.windowCoordinator?.restartApp()
+            }
+        )
 
-        controlWindowController?.showWindow(nil)
-        teleprompterWindowController?.showWindow(nil)
+        if let controlWindowController, let teleprompterWindowController {
+            windowCoordinator = WindowCoordinator(
+                controlWindowController: controlWindowController,
+                teleprompterWindowController: teleprompterWindowController
+            )
+        }
 
-        configureTeleprompterWindow()
+        configureMainMenu()
+        windowCoordinator?.showControlWindow()
+        windowCoordinator?.showTeleprompterWindow()
+
         registerDisplayNotifications()
         registerKeyboardShortcuts()
         store.updateConnectedDisplayCount(NSScreen.screens.count)
@@ -35,7 +51,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            windowCoordinator?.showControlWindow()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -52,24 +77,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = try? AppSupportPaths.ensureDirectoriesExist()
     }
 
-    // MARK: - Teleprompter window configuration
+    // MARK: - Menu bar
 
-    private func configureTeleprompterWindow() {
-        guard let window = teleprompterWindowController?.window else { return }
+    private func configureMainMenu() {
+        let mainMenu = NSMenu()
+        NSApp.mainMenu = mainMenu
 
-        // Float above other windows
-        window.level = .floating
+        let appMenuItem = NSMenuItem(title: ProcessInfo.processInfo.processName, action: nil, keyEquivalent: "")
+        let appMenu = NSMenu()
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
 
-        // Position on external display if available
-        positionWindowOnBestScreen(window)
-    }
+        let restartItem = NSMenuItem(title: "Restart App", action: #selector(restartAppFromMenu(_:)), keyEquivalent: "r")
+        restartItem.keyEquivalentModifierMask = [.command, .shift]
+        restartItem.target = self
+        appMenu.addItem(restartItem)
+        appMenu.addItem(NSMenuItem.separator())
 
-    private func positionWindowOnBestScreen(_ window: NSWindow) {
-        let candidateScreen = NSScreen.screens.dropFirst().first ?? NSScreen.main
-        guard let frame = candidateScreen?.visibleFrame else { return }
+        let quitItem = NSMenuItem(
+            title: "Quit \(ProcessInfo.processInfo.processName)",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        appMenu.addItem(quitItem)
 
-        // Fill the target screen
-        window.setFrame(frame, display: true)
+        let windowMenuItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: "Window")
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+
+        let showControlItem = NSMenuItem(title: "Show Control Window", action: #selector(showControlWindowFromMenu(_:)), keyEquivalent: "1")
+        showControlItem.keyEquivalentModifierMask = [.command]
+        showControlItem.target = self
+        windowMenu.addItem(showControlItem)
+
+        let showDisplayItem = NSMenuItem(title: "Show Teleprompter Display", action: #selector(showTeleprompterWindowFromMenu(_:)), keyEquivalent: "2")
+        showDisplayItem.keyEquivalentModifierMask = [.command]
+        showDisplayItem.target = self
+        windowMenu.addItem(showDisplayItem)
+
+        windowMenu.addItem(NSMenuItem.separator())
+
+        let bringAllToFrontItem = NSMenuItem(title: "Bring All to Front", action: #selector(bringAllWindowsToFront(_:)), keyEquivalent: "")
+        bringAllToFrontItem.target = self
+        windowMenu.addItem(bringAllToFrontItem)
+
+        NSApp.windowsMenu = windowMenu
     }
 
     // MARK: - Display connect/disconnect
@@ -121,18 +174,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func screensDidChange(_ notification: Notification) {
-        guard let window = teleprompterWindowController?.window else { return }
         store.updateConnectedDisplayCount(NSScreen.screens.count)
 
         if NSScreen.screens.count > 1 {
-            // External display connected — move teleprompter there
-            positionWindowOnBestScreen(window)
+            windowCoordinator?.repositionTeleprompterWindowIfVisible()
             store.statusDetail = "External display detected. Teleprompter moved."
         } else {
-            // Only built-in display — keep teleprompter on main
-            positionWindowOnBestScreen(window)
+            windowCoordinator?.repositionTeleprompterWindowIfVisible()
             store.statusDetail = "Single display. Teleprompter on main screen."
         }
+    }
+
+    @objc private func showControlWindowFromMenu(_ sender: Any?) {
+        windowCoordinator?.showControlWindow()
+    }
+
+    @objc private func showTeleprompterWindowFromMenu(_ sender: Any?) {
+        windowCoordinator?.showTeleprompterWindow()
+    }
+
+    @objc private func bringAllWindowsToFront(_ sender: Any?) {
+        windowCoordinator?.bringAllToFront()
+    }
+
+    @objc private func restartAppFromMenu(_ sender: Any?) {
+        windowCoordinator?.restartApp()
     }
 
     private func runKeyboardShortcutProbe() -> OperationalProbeResult {

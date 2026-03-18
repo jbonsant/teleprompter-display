@@ -71,7 +71,7 @@ public final class AppSessionStore: ObservableObject {
         PlaceholderSegment(
             title: "Ouverture",
             blocks: [
-                "Merci de nous recevoir. Je suis Jeremie Bonsant, fondateur de Webisoft.",
+                "Merci de nous recevoir. Je suis Jeremie Bonsant.",
                 "Le GPSN est un projet de numerisation du metier notarial.",
                 "La technologie est au service de la profession, pas l'inverse.",
             ],
@@ -153,6 +153,7 @@ public final class AppSessionStore: ObservableObject {
     private let alignmentPolicy: AlignmentPolicy
     private let modelDirectory: URL
     private let reportsDirectory: URL
+    private var countdownTask: Task<Void, Never>?
     private var hypothesisTask: Task<Void, Never>?
     private var confirmedTask: Task<Void, Never>?
     private var sessionLog: SessionLog
@@ -248,6 +249,7 @@ public final class AppSessionStore: ObservableObject {
 
     deinit {
         let asrService = asrService
+        countdownTask?.cancel()
         hypothesisTask?.cancel()
         confirmedTask?.cancel()
         Task {
@@ -504,7 +506,22 @@ public final class AppSessionStore: ObservableObject {
     }
 
     public func startCountdown(seconds: TimeInterval = 3) {
-        countdownTargetDate = nowProvider().addingTimeInterval(seconds)
+        let targetDate = nowProvider().addingTimeInterval(seconds)
+        countdownTask?.cancel()
+        countdownTargetDate = targetDate
+        countdownTask = Task { @MainActor [weak self] in
+            defer {
+                self?.countdownTask = nil
+            }
+
+            if seconds > 0 {
+                try? await Task.sleep(for: .seconds(seconds))
+            }
+
+            guard !Task.isCancelled, let self else { return }
+            guard self.sessionState == .countdown, self.countdownTargetDate == targetDate else { return }
+            self.beginLiveAuto()
+        }
         Task { [weak self] in
             await self?.startASR()
         }
@@ -651,6 +668,11 @@ public final class AppSessionStore: ObservableObject {
 
         if let selected = devices.first(where: { $0.id == selectedAudioInputID }) {
             selectedAudioInputName = selected.name
+        } else {
+            let preferredDevice = Self.preferredAudioInput(from: devices)
+            selectedAudioInputID = preferredDevice?.id
+            selectedAudioInputName = preferredDevice?.name ?? "System Default"
+            await asrService.selectInputDevice(id: selectedAudioInputID)
         }
     }
 
@@ -668,11 +690,6 @@ public final class AppSessionStore: ObservableObject {
             )
         )
     }
-        } else {
-            let preferredDevice = Self.preferredAudioInput(from: devices)
-            selectedAudioInputID = preferredDevice?.id
-            selectedAudioInputName = preferredDevice?.name ?? "System Default"
-            await asrService.selectInputDevice(id: selectedAudioInputID)
 
     public func requestMicrophonePermission() async -> Bool {
         let granted = await asrService.requestMicrophonePermission()
@@ -827,9 +844,17 @@ public final class AppSessionStore: ObservableObject {
                 let warmup = try await asrService.warmModel()
                 latencySnapshot.modelLoadSeconds = warmup.loadSeconds
                 let passed = warmup.loadSeconds < SessionConfiguration.preflightWarmupThresholdSeconds
-                return passed
-                    ? .pass(String(format: "Warm load %.2fs (< %.0fs target).", warmup.loadSeconds, SessionConfiguration.preflightWarmupThresholdSeconds))
-                    : .fail(String(format: "Warm load %.2fs exceeds %.0fs target.", warmup.loadSeconds, SessionConfiguration.preflightWarmupThresholdSeconds))
+                let detail: String
+                if let initialLoadSeconds = warmup.initialLoadSeconds {
+                    detail = passed
+                        ? String(format: "Warm load %.2fs (< %.0fs target) after one-time specialization %.2fs.", warmup.loadSeconds, SessionConfiguration.preflightWarmupThresholdSeconds, initialLoadSeconds)
+                        : String(format: "Warm verification load %.2fs exceeds %.0fs target after initial %.2fs specialization.", warmup.loadSeconds, SessionConfiguration.preflightWarmupThresholdSeconds, initialLoadSeconds)
+                } else {
+                    detail = passed
+                        ? String(format: "Warm load %.2fs (< %.0fs target).", warmup.loadSeconds, SessionConfiguration.preflightWarmupThresholdSeconds)
+                        : String(format: "Warm load %.2fs exceeds %.0fs target.", warmup.loadSeconds, SessionConfiguration.preflightWarmupThresholdSeconds)
+                }
+                return passed ? .pass(detail) : .fail(detail)
             } catch {
                 return .fail(error.localizedDescription)
             }
@@ -837,9 +862,10 @@ public final class AppSessionStore: ObservableObject {
         case .liveFrenchMicTest:
             do {
                 let sanity = try await asrService.validateFrenchMicrophone(prompt: SessionConfiguration.microphonePrompt, timeoutSeconds: 12)
+                let streamLabel = sanity.source == "confirmed" ? "Confirmed" : "Hypothesis"
                 return sanity.looksFrench
-                    ? .pass("Confirmed French transcription: \"\(sanity.transcribedText)\"")
-                    : .fail("Transcription was not confidently French: \"\(sanity.transcribedText)\"")
+                    ? .pass("\(streamLabel) French transcription: \"\(sanity.transcribedText)\"")
+                    : .fail("\(streamLabel) transcription was not confidently French: \"\(sanity.transcribedText)\"")
             } catch {
                 return .fail(error.localizedDescription)
             }
@@ -1339,24 +1365,35 @@ public final class AppSessionStore: ObservableObject {
         switch state {
         case .liveAuto:
             isPaused = false
-            if !isEmergencyScrolling {
-                countdownTargetDate = nil
-            }
+            cancelCountdown()
         case .liveFrozen:
+            cancelCountdown()
             isPaused = true
             isEmergencyScrolling = false
         case .manualScroll:
+            cancelCountdown()
             isEmergencyScrolling = true
         case .recoveringLocal, .recoveringCloud:
+            cancelCountdown()
             isPaused = false
-        case .ready, .countdown:
+        case .ready:
+            cancelCountdown()
+            isEmergencyScrolling = false
+        case .countdown:
             isEmergencyScrolling = false
         case .idle:
+            cancelCountdown()
             isPaused = false
             isEmergencyScrolling = false
         case .preflight, .error:
-            break
+            cancelCountdown()
         }
+    }
+
+    private func cancelCountdown() {
+        countdownTask?.cancel()
+        countdownTask = nil
+        countdownTargetDate = nil
     }
 
     private func appendManualJumpEvent(reason: String) {
@@ -1431,13 +1468,6 @@ public final class AppSessionStore: ObservableObject {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.count > 2 }
     }
-}
-
-private extension Collection {
-    subscript(safe index: Index) -> Element? {
-        indices.contains(index) ? self[index] : nil
-    }
-}
 
     private static func preferredAudioInput(from devices: [AudioInputDeviceDescriptor]) -> AudioInputDeviceDescriptor? {
         guard !devices.isEmpty else { return nil }
@@ -1463,3 +1493,10 @@ private extension Collection {
 
         return devices.first
     }
+}
+
+private extension Collection {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}

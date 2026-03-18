@@ -22,7 +22,8 @@ final class AppSessionStoreIntegrationTests: XCTestCase {
                 transcribedText: "Bonjour GPSN, nous validons la transcription francaise en direct.",
                 overlapScore: 0.93,
                 looksFrench: true,
-                latencySeconds: 1.1
+                latencySeconds: 1.1,
+                source: "confirmed"
             )
         )
 
@@ -148,6 +149,31 @@ final class AppSessionStoreIntegrationTests: XCTestCase {
         let advancedIndex = store.currentSegmentIndex
         store.handleNextSegment()
         XCTAssertEqual(store.currentSegmentIndex, advancedIndex + 1)
+    }
+
+    func testCountdownAutomaticallyTransitionsIntoLiveAuto() async throws {
+        let sandbox = try TestSandbox()
+        let store = AppSessionStore(
+            referenceDirectory: referencesURL,
+            modelDirectory: sandbox.modelsDirectory,
+            reportsDirectory: sandbox.reportsDirectory,
+            asrService: MockASRService(),
+            cloudRecoveryClient: MockCloudRecoveryClient()
+        )
+
+        store.beginPreflight()
+        store.completePreflight(
+            PreflightCheckKind.allCases.map {
+                PreflightResult(kind: $0, status: .pass, detail: "Prepared for countdown test.")
+            }
+        )
+
+        store.startCountdown(seconds: 0.05)
+
+        try await waitUntil(timeout: 1.0) { store.sessionState == .liveAuto }
+        XCTAssertEqual(store.sessionState, .liveAuto)
+        XCTAssertNil(store.countdownTargetDate)
+        XCTAssertNotNil(store.sessionStartedAt)
     }
 
     func testRefreshAudioInputsPrefersWirelessMicReceiverWhenAvailable() async throws {
@@ -327,7 +353,8 @@ private actor MockASRService: StreamingASRServiceControlling {
             transcribedText: "Bonjour GPSN",
             overlapScore: 0.9,
             looksFrench: true,
-            latencySeconds: 1.0
+            latencySeconds: 1.0,
+            source: "confirmed"
         ),
         latencySnapshot: ASRLatencySnapshot = ASRLatencySnapshot(
             hypothesisTargetSeconds: 0.45,

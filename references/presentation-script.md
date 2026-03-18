@@ -9,7 +9,7 @@ Le reste = repères courts à parcourir du regard.
 
 ## Ouverture (~1 min)
 
-Merci de nous recevoir. Je suis Jeremie Bonsant, fondateur de Webisoft.
+Merci de nous recevoir. Je suis Jeremie Bonsant.
 
 - 6 sujets en 60 minutes, puis vos questions
 - Fil conducteur: le GPSN est un projet de numérisation du métier notarial

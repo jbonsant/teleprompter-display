@@ -4,11 +4,13 @@ public struct ASRModelWarmupResult: Codable, Sendable, Equatable {
     public let modelID: String
     public let loadSeconds: TimeInterval
     public let modelDirectory: URL
+    public let initialLoadSeconds: TimeInterval?
 
-    public init(modelID: String, loadSeconds: TimeInterval, modelDirectory: URL) {
+    public init(modelID: String, loadSeconds: TimeInterval, modelDirectory: URL, initialLoadSeconds: TimeInterval? = nil) {
         self.modelID = modelID
         self.loadSeconds = loadSeconds
         self.modelDirectory = modelDirectory
+        self.initialLoadSeconds = initialLoadSeconds
     }
 }
 
@@ -18,19 +20,22 @@ public struct ASRMicrophoneSanityResult: Codable, Sendable, Equatable {
     public let overlapScore: Double
     public let looksFrench: Bool
     public let latencySeconds: TimeInterval
+    public let source: String
 
     public init(
         prompt: String,
         transcribedText: String,
         overlapScore: Double,
         looksFrench: Bool,
-        latencySeconds: TimeInterval
+        latencySeconds: TimeInterval,
+        source: String
     ) {
         self.prompt = prompt
         self.transcribedText = transcribedText
         self.overlapScore = overlapScore
         self.looksFrench = looksFrench
         self.latencySeconds = latencySeconds
+        self.source = source
     }
 }
 

@@ -7,64 +7,43 @@
     {
       "id": "section-ouverture",
       "title": "Ouverture",
-      "segmentIDs": [
-        "seg-ouverture-1"
-      ]
+      "segmentIDs": ["seg-ouverture-1"]
     },
     {
       "id": "section-1-processus",
       "title": "Documentation et modélisation des processus d'affaires notariaux",
-      "segmentIDs": [
-        "seg-1a",
-        "seg-1b",
-        "seg-1c"
-      ]
+      "segmentIDs": ["seg-1a", "seg-1b", "seg-1c"]
     },
     {
       "id": "section-2-architecture",
       "title": "Architecture logicielle de la solution",
-      "segmentIDs": [
-        "seg-2a",
-        "seg-2b"
-      ]
+      "segmentIDs": ["seg-2a", "seg-2b"]
     },
     {
       "id": "section-3-workflow",
       "title": "Moteur de workflow proposé et gestion de l'évolution d'une demande",
-      "segmentIDs": [
-        "seg-3a",
-        "seg-3b",
-        "seg-3c"
-      ]
+      "segmentIDs": ["seg-3a", "seg-3b", "seg-3c"]
     },
     {
       "id": "section-4-ui",
       "title": "Exemple d'interface utilisateur et déroulement d'une transaction notariale",
-      "segmentIDs": [
-        "seg-4a",
-        "seg-4b"
-      ]
+      "segmentIDs": ["seg-4a", "seg-4b"]
     },
     {
       "id": "section-5-modules",
       "title": "Articulation entre les modules Services notariaux et Coffre-fort numérique",
-      "segmentIDs": [
-        "seg-5a"
-      ]
+      "segmentIDs": ["seg-5a"]
     },
     {
       "id": "section-6-tests",
       "title": "Approche d'essais automatisés et de validation de la solution",
-      "segmentIDs": [
-        "seg-6a",
-        "seg-6b"
-      ]
+      "segmentIDs": ["seg-6a", "seg-6b"]
     }
   ],
   "displayBlocks": [
     {
       "id": "disp-ouverture-1",
-      "text": "Merci de nous recevoir. Je suis Jeremie Bonsant, fondateur de Webisoft. 6 sujets en 60 minutes, puis vos questions. Fil conducteur: le GPSN est un projet de numérisation du métier notarial.",
+      "text": "Merci de nous recevoir. Je suis Jeremie Bonsant. 6 sujets en 60 minutes, puis vos questions. Fil conducteur: le GPSN est un projet de numérisation du métier notarial.",
       "segmentID": "seg-ouverture-1",
       "sectionID": "section-ouverture"
     },
@@ -150,7 +129,7 @@
   "spokenSegments": [
     {
       "id": "seg-ouverture-1",
-      "text": "Merci de nous recevoir. Je suis Jeremie Bonsant, fondateur de Webisoft. Aujourd'hui six sujets en soixante minutes, puis vos questions. Le GPSN est un projet de numérisation du métier notarial. La technologie est au service de la profession, pas l'inverse.",
+      "text": "Merci de nous recevoir. Je suis Jeremie Bonsant. Aujourd'hui six sujets en soixante minutes, puis vos questions. Le GPSN est un projet de numérisation du métier notarial. La technologie est au service de la profession, pas l'inverse.",
       "sectionID": "section-ouverture"
     },
     {

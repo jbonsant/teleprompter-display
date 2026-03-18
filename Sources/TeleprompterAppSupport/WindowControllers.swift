@@ -3,8 +3,16 @@ import SwiftUI
 
 @MainActor
 public final class ControlWindowController: NSWindowController {
-    public init(store: AppSessionStore) {
-        let rootView = ControlRootView(store: store)
+    public init(
+        store: AppSessionStore,
+        onShowDisplay: @escaping () -> Void = {},
+        onRestartApp: @escaping () -> Void = {}
+    ) {
+        let rootView = ControlRootView(
+            store: store,
+            onShowDisplay: onShowDisplay,
+            onRestartApp: onRestartApp
+        )
         let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Teleprompter Control"
@@ -17,6 +25,11 @@ public final class ControlWindowController: NSWindowController {
     @available(*, unavailable)
     public required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    public func present() {
+        super.showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -45,16 +58,15 @@ public final class TeleprompterWindowController: NSWindowController {
     }
 
     public override func showWindow(_ sender: Any?) {
-        super.showWindow(sender)
-        fillTargetDisplay()
+        present(on: window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
     }
 
-    private func fillTargetDisplay() {
+    public func present(on targetFrame: NSRect?) {
+        super.showWindow(nil)
         guard let window else { return }
-        let targetFrame = window.screen?.frame ?? NSScreen.main?.frame
-        guard let targetFrame else { return }
-
-        window.setFrame(targetFrame, display: true, animate: true)
+        if let targetFrame {
+            window.setFrame(targetFrame, display: true, animate: true)
+        }
         window.makeKeyAndOrderFront(nil)
     }
 }
