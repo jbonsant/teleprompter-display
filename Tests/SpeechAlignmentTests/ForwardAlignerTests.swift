@@ -110,6 +110,41 @@ final class ForwardAlignerTests: XCTestCase {
         XCTAssertEqual(firstUpdate.segmentIndex, 3)
         XCTAssertEqual(firstUpdate.frame.debounceCount, 1)
     }
+
+    func testTailCompletionAdvancesToNextSegmentBeforeNextSentenceStarts() {
+        let bundle = makeBundle(
+            segments: [
+                "nous terminons cette introduction avant de passer a l architecture",
+                "react typescript django structurent la solution",
+                "le moteur de workflow orchestre chaque demande notariale",
+            ]
+        )
+        var aligner = ForwardAligner(bundle: bundle)
+
+        let tailChunk = chunk("avant de passer a l architecture")
+        let update = aligner.ingestConfirmedChunk(tailChunk)
+
+        XCTAssertEqual(update.segmentIndex, 1)
+        XCTAssertEqual(update.frame.chosenSegmentID, "segment-2")
+        XCTAssertGreaterThan(update.confidence, 0.8)
+    }
+
+    func testMidSegmentSpeechDoesNotAdvanceEarly() {
+        let bundle = makeBundle(
+            segments: [
+                "nous terminons cette introduction avant de passer a l architecture",
+                "react typescript django structurent la solution",
+                "le moteur de workflow orchestre chaque demande notariale",
+            ]
+        )
+        var aligner = ForwardAligner(bundle: bundle)
+
+        let middleChunk = chunk("nous terminons cette introduction")
+        let update = aligner.ingestConfirmedChunk(middleChunk)
+
+        XCTAssertEqual(update.segmentIndex, 0)
+        XCTAssertEqual(update.frame.chosenSegmentID, "segment-1")
+    }
 }
 
 private extension ForwardAlignerTests {

@@ -149,6 +149,53 @@ final class AppSessionStoreIntegrationTests: XCTestCase {
         store.handleNextSegment()
         XCTAssertEqual(store.currentSegmentIndex, advancedIndex + 1)
     }
+
+    func testRefreshAudioInputsPrefersWirelessMicReceiverWhenAvailable() async throws {
+        let sandbox = try TestSandbox()
+        let asrService = MockASRService(
+            devices: [
+                AudioInputDeviceDescriptor(id: "usb", name: "USB Audio Codec"),
+                AudioInputDeviceDescriptor(id: "macbook", name: "MacBook Pro Microphone"),
+                AudioInputDeviceDescriptor(id: "wireless", name: "Wireless Mic Rx"),
+            ]
+        )
+        let store = AppSessionStore(
+            referenceDirectory: referencesURL,
+            modelDirectory: sandbox.modelsDirectory,
+            reportsDirectory: sandbox.reportsDirectory,
+            asrService: asrService,
+            cloudRecoveryClient: MockCloudRecoveryClient()
+        )
+
+        await store.refreshAudioInputs()
+
+        XCTAssertEqual(store.selectedAudioInputName, "Wireless Mic Rx")
+        let selectedDevice = await asrService.selectedInputDeviceDescriptor()
+        XCTAssertEqual(selectedDevice?.name, "Wireless Mic Rx")
+    }
+
+    func testRefreshAudioInputsFallsBackToMacBookMicrophoneWhenWirelessReceiverIsMissing() async throws {
+        let sandbox = try TestSandbox()
+        let asrService = MockASRService(
+            devices: [
+                AudioInputDeviceDescriptor(id: "usb", name: "USB Audio Codec"),
+                AudioInputDeviceDescriptor(id: "macbook", name: "MacBook Pro Microphone"),
+            ]
+        )
+        let store = AppSessionStore(
+            referenceDirectory: referencesURL,
+            modelDirectory: sandbox.modelsDirectory,
+            reportsDirectory: sandbox.reportsDirectory,
+            asrService: asrService,
+            cloudRecoveryClient: MockCloudRecoveryClient()
+        )
+
+        await store.refreshAudioInputs()
+
+        XCTAssertEqual(store.selectedAudioInputName, "MacBook Pro Microphone")
+        let selectedDevice = await asrService.selectedInputDeviceDescriptor()
+        XCTAssertEqual(selectedDevice?.name, "MacBook Pro Microphone")
+    }
 }
 
 private extension AppSessionStoreIntegrationTests {

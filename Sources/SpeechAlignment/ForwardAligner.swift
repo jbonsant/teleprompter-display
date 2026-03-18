@@ -51,6 +51,10 @@ public struct ForwardAlignmentUpdate: Sendable, Equatable {
 }
 
 public struct ForwardAligner: Sendable {
+    private static let eagerAdvanceTailThreshold = 0.82
+    private static let eagerAdvanceMinimumTailWords = 4
+    private static let eagerAdvanceMaximumTailWords = 8
+
     private let bundle: PresentationBundle
     private let policy: AlignmentPolicy
     private let segmentWords: [[String]]
@@ -132,6 +136,8 @@ public struct ForwardAligner: Sendable {
 
         let chosenCandidateIndex = bestCandidate?.0
         let chosenConfidence = bestCandidate?.1 ?? 0
+        var effectiveChosenCandidateIndex = chosenCandidateIndex
+        var effectiveConfidence = chosenConfidence
         var reportedDebounceCount = debounceCount
         let candidateWindow = scoredCandidates.map { candidateIndex, score in
             AlignmentCandidateContext(
@@ -142,7 +148,18 @@ public struct ForwardAligner: Sendable {
             )
         }
 
-        if chosenConfidence >= policy.confidenceThreshold, let chosenCandidateIndex {
+        if let eagerAdvance = eagerAdvanceDecision(
+            chosenCandidateIndex: chosenCandidateIndex,
+            chosenConfidence: chosenConfidence,
+            fullConfirmedWords: confirmedWords
+        ) {
+            cursorIndex = eagerAdvance.segmentIndex
+            pendingCandidateIndex = nil
+            debounceCount = 0
+            effectiveChosenCandidateIndex = eagerAdvance.segmentIndex
+            effectiveConfidence = eagerAdvance.confidence
+            reportedDebounceCount = policy.debounceFrames
+        } else if chosenConfidence >= policy.confidenceThreshold, let chosenCandidateIndex {
             if pendingCandidateIndex == chosenCandidateIndex {
                 debounceCount += 1
             } else {
@@ -170,21 +187,47 @@ public struct ForwardAligner: Sendable {
                     score: score
                 )
             },
-            chosenSegmentID: chosenCandidateIndex.flatMap { bundle.spokenSegments[safe: $0]?.id },
-            confidence: chosenConfidence,
+            chosenSegmentID: effectiveChosenCandidateIndex.flatMap { bundle.spokenSegments[safe: $0]?.id },
+            confidence: effectiveConfidence,
             debounceCount: reportedDebounceCount
         )
 
         return ForwardAlignmentUpdate(
             segmentID: currentSegmentID,
             segmentIndex: cursorIndex,
-            confidence: chosenConfidence,
+            confidence: effectiveConfidence,
             frame: frame,
             anchorRecoveryAttempted: anchorRecoveryAttempted,
             anchorRecoverySucceeded: anchorRecoverySucceeded,
             candidateWindow: candidateWindow,
             recentConfirmedWords: recentConfirmedWords
         )
+    }
+
+    private func eagerAdvanceDecision(
+        chosenCandidateIndex: Int?,
+        chosenConfidence: Double,
+        fullConfirmedWords: [String]
+    ) -> (segmentIndex: Int, confidence: Double)? {
+        guard
+            chosenCandidateIndex == cursorIndex,
+            cursorIndex + 1 < bundle.spokenSegments.count,
+            !fullConfirmedWords.isEmpty
+        else {
+            return nil
+        }
+
+        let candidateWords = segmentWords[cursorIndex]
+        guard fullConfirmedWords.count < candidateWords.count else {
+            return nil
+        }
+
+        let tailScore = tailCompletionScore(fullConfirmedWords: fullConfirmedWords, candidateIndex: cursorIndex)
+        guard tailScore >= Self.eagerAdvanceTailThreshold else {
+            return nil
+        }
+
+        return (cursorIndex + 1, max(chosenConfidence, tailScore))
     }
 
     public mutating func ingestConfirmedEvent(_ event: ASRTranscriptionEvent) -> ForwardAlignmentUpdate {
@@ -280,6 +323,31 @@ public struct ForwardAligner: Sendable {
             )
             return max(best, score)
         }
+    }
+
+    private func tailCompletionScore(fullConfirmedWords: [String], candidateIndex: Int) -> Double {
+        let candidateWords = segmentWords[candidateIndex]
+        guard candidateWords.count >= Self.eagerAdvanceMinimumTailWords else { return 0 }
+
+        let tailLength = min(
+            Self.eagerAdvanceMaximumTailWords,
+            max(Self.eagerAdvanceMinimumTailWords, candidateWords.count / 3)
+        )
+        let tailWords = Array(candidateWords.suffix(tailLength))
+        guard tailWords.count >= Self.eagerAdvanceMinimumTailWords else { return 0 }
+
+        let maximumOverlap = min(fullConfirmedWords.count, tailWords.count)
+        guard maximumOverlap >= Self.eagerAdvanceMinimumTailWords else { return 0 }
+
+        for overlap in stride(from: maximumOverlap, through: Self.eagerAdvanceMinimumTailWords, by: -1) {
+            let querySuffix = Array(fullConfirmedWords.suffix(overlap))
+            let tailSuffix = Array(tailWords.suffix(overlap))
+            if querySuffix == tailSuffix {
+                return Double(overlap) / Double(tailWords.count)
+            }
+        }
+
+        return 0
     }
 
     private func ngramScore(queryWords: [String], candidateWords: [String], n: Int) -> Double {

@@ -43,6 +43,9 @@ public struct OperationalProbeResult: Sendable, Equatable {
 
 @MainActor
 public final class AppSessionStore: ObservableObject {
+    private static let preferredPrimaryMicrophoneName = "wireless mic rx"
+    private static let preferredBackupMicrophoneTokens = ["macbook", "built-in microphone", "built in microphone"]
+
     public struct ControlBookmarkSummary: Identifiable, Hashable, Sendable {
         public enum Kind: String, Sendable {
             case section
@@ -646,11 +649,7 @@ public final class AppSessionStore: ObservableObject {
         let devices = await asrService.availableInputDevices()
         availableAudioInputs = devices
 
-        if selectedAudioInputID == nil {
-            selectedAudioInputID = devices.first?.id
-            selectedAudioInputName = devices.first?.name ?? "System Default"
-            await asrService.selectInputDevice(id: selectedAudioInputID)
-        } else if let selected = devices.first(where: { $0.id == selectedAudioInputID }) {
+        if let selected = devices.first(where: { $0.id == selectedAudioInputID }) {
             selectedAudioInputName = selected.name
         }
     }
@@ -669,6 +668,11 @@ public final class AppSessionStore: ObservableObject {
             )
         )
     }
+        } else {
+            let preferredDevice = Self.preferredAudioInput(from: devices)
+            selectedAudioInputID = preferredDevice?.id
+            selectedAudioInputName = preferredDevice?.name ?? "System Default"
+            await asrService.selectInputDevice(id: selectedAudioInputID)
 
     public func requestMicrophonePermission() async -> Bool {
         let granted = await asrService.requestMicrophonePermission()
@@ -1434,3 +1438,28 @@ private extension Collection {
         indices.contains(index) ? self[index] : nil
     }
 }
+
+    private static func preferredAudioInput(from devices: [AudioInputDeviceDescriptor]) -> AudioInputDeviceDescriptor? {
+        guard !devices.isEmpty else { return nil }
+
+        let normalizedDevices = devices.map { device in
+            (
+                device: device,
+                normalizedName: device.name
+                    .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                    .lowercased()
+            )
+        }
+
+        if let primary = normalizedDevices.first(where: { $0.normalizedName.contains(preferredPrimaryMicrophoneName) })?.device {
+            return primary
+        }
+
+        if let backup = normalizedDevices.first(where: { entry in
+            preferredBackupMicrophoneTokens.contains { entry.normalizedName.contains($0) }
+        })?.device {
+            return backup
+        }
+
+        return devices.first
+    }
